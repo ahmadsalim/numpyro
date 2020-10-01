@@ -7,6 +7,7 @@ import jax.random
 
 __all__ = ['ReinitGuide', 'WrappedGuide']
 
+
 class ReinitGuide(ABC):
     @abstractmethod
     def init_params(self):

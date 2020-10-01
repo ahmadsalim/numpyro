@@ -34,6 +34,7 @@ def init_to_median(site=None, reinit_param=lambda site: False, num_samples=15):
     if site['type'] == 'param' and reinit_param(site):
         return site['args'][0]
 
+
 def init_to_sample(site=None, reinit_param=lambda site: False):
     """
     Initialize to a prior sample. For priors with no `.sample` method implemented,

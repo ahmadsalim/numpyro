@@ -6,7 +6,7 @@ from functools import namedtuple, partial
 import jax
 from jax import random, value_and_grad
 
-from numpyro.contrib.funsor import enum, config_enumerat
+from numpyro.contrib.funsor import enum, config_enumerate
 from numpyro.distributions import Distribution, Delta
 from numpyro.handlers import seed, trace, replay
 from numpyro.infer import VI

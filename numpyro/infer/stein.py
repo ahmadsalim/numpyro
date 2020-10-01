@@ -8,7 +8,7 @@ from jax import ops
 from jax.tree_util import tree_map
 
 from numpyro import handlers
-from numpyro.contrib.funsor import enum
+from numpyro.contrib.funsor import enum, config_enumerate
 from numpyro.distributions import Distribution, Delta
 from numpyro.distributions.transforms import IdentityTransform
 from numpyro.infer import NUTS, MCMC, VI
@@ -285,7 +285,7 @@ class Stein(VI):
 
         if should_enum:
             mpn = _guess_max_plate_nesting(model_trace)
-            self._inference_model = enum(self.model, - mpn - 1)
+            self._inference_model = enum(config_enumerate(self.model), - mpn - 1)
         self.guide_param_names = guide_param_names
         self.constrain_fn = partial(transform_fn, inv_transforms)
         self.uconstrain_fn = partial(transform_fn, transforms)
