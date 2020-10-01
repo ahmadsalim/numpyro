@@ -6,7 +6,7 @@ from functools import namedtuple, partial
 import jax
 from jax import random, value_and_grad
 
-from numpyro.contrib.funsor import enum
+from numpyro.contrib.funsor import enum, config_enumerat
 from numpyro.distributions import Distribution, Delta
 from numpyro.handlers import seed, trace, replay
 from numpyro.infer import VI
@@ -115,7 +115,7 @@ class SVI(VI):
 
         if should_enum:
             mpn = _guess_max_plate_nesting(model_trace)
-            self._inference_model = enum(self.model, - mpn - 1)
+            self._inference_model = enum(config_enumerate(self.model), - mpn - 1)
 
         self.constrain_fn = partial(transform_fn, inv_transforms)
         return SVIState(self.optim.init(params), rng_key)
