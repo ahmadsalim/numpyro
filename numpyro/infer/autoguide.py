@@ -647,10 +647,12 @@ class AutoBNAFNormal(AutoContinuous):
 
 
 class AutoDelta(AutoGuide, ReinitGuide):
-    def __init__(self, model, *, prefix='auto', init_strategy=init_to_uniform(), create_plates=None):
+    def __init__(self, model, *, prefix='auto', init_strategy=init_to_uniform(), create_plates=None,
+                 hide_fn=lambda site: False):
         self.init_strategy = init_strategy
         self._param_map = None
         self._init_params = None
+        self.hide_fn = hide_fn
         super(AutoDelta, self).__init__(model, prefix=prefix, create_plates=create_plates)
 
     def init_params(self):
@@ -686,12 +688,11 @@ class AutoDelta(AutoGuide, ReinitGuide):
         def _find_param(site, rng_key):
             site = site.copy()
             site['kwargs']['rng_key'] = rng_key
-            trans = biject_to(site['fn'].support)
             return self.init_strategy(site, reinit_param=True)
         params = {site['name']: site['value'] for site in self.prototype_trace.values()
-                  if site['type'] == 'sample' and not site['is_observed']}
+                  if site['type'] == 'sample' and not site['is_observed'] and not self.hide_fn(site)}
         for name, site in self.prototype_trace.items():
-            if site['type'] == 'sample' and not site['is_observed']:
+            if site['type'] == 'sample' and not site['is_observed'] and not self.hide_fn(site):
                 param_name = "{}_{}".format(self.prefix, name)
                 if rng_keys.ndim > 1:
                     param_val = jax.vmap(functools.partial(_find_param, site))(rng_keys)

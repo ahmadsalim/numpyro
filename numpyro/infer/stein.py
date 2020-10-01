@@ -9,7 +9,7 @@ from jax.tree_util import tree_map
 
 from numpyro import handlers
 from numpyro.contrib.funsor import enum, config_enumerate
-from numpyro.distributions import Distribution, Delta
+from numpyro.distributions import Distribution
 from numpyro.distributions.transforms import IdentityTransform
 from numpyro.infer import NUTS, MCMC, VI
 from numpyro.infer.guide import ReinitGuide
@@ -260,14 +260,14 @@ class Stein(VI):
         particle_transforms = {}
         guide_param_names = set()
         should_enum = False
+        for site in model_trace.values():
+            if isinstance(site['fn'], Distribution) and site['fn'].is_discrete:
+                if site['fn'].has_enumerate_support and self.enum:
+                    should_enum = True
+                else:
+                    raise Exception("Cannot enumerate model with discrete variables without enumerate support")
         # NB: params in model_trace will be overwritten by params in guide_trace
         for site in list(model_trace.values()) + list(guide_trace.values()):
-            if site['name'] in model_trace:
-                if isinstance(site['fn'], Distribution) and site['fn'].is_discrete:
-                    if (isinstance(site['fn'], Delta) or site['fn'].has_enumerate_support) and self.enum:
-                        should_enum = True
-                    else:
-                        raise Exception("Cannot enumerate model with discrete variables without enumerate support")
             if site['type'] == 'param':
                 transform = get_parameter_transform(site)
                 inv_transforms[site['name']] = transform

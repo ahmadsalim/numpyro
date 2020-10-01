@@ -15,6 +15,7 @@ import numpy as np
 
 from numpyro.callbacks import Progbar
 from numpyro.contrib.funsor import enum
+from numpyro.contrib.indexing import Vindex
 from numpyro.guides import WrappedGuide
 from numpyro.handlers import trace, seed, block, mask
 from numpyro.infer import SVI, ELBO, Stein
@@ -33,27 +34,26 @@ def lda(doc_words, lengths, num_topics=20, num_words=100, num_max_elements=10,
         document_topic_probs = numpyro.sample('topic_probs', dist.Dirichlet(jnp.ones(num_topics) / num_topics))
         with numpyro.plate('words', num_max_elements, dim=-1):
             word_topic = numpyro.sample('word_topic', dist.Categorical(document_topic_probs))
-            indices = jnp.arange(num_max_elements)
-            data_mask = indices[None] < lengths[..., None]
-            with mask(mask=data_mask):
-                numpyro.sample('word', dist.Categorical(topic_word_probs[word_topic]), obs=doc_words)
+            numpyro.sample('word', dist.Categorical(Vindex(topic_word_probs)[word_topic]), obs=doc_words)
 
 
 def lda_guide(doc_words, lengths, num_topics=20, num_words=100, num_max_elements=10,
               num_hidden=100):
     num_docs = doc_words.shape[0]
-    topic_word_pcs = numpyro.param('topic_word_pcs', jnp.ones((num_topics, num_words)),
-                                   constraint=dist.constraints.positive)
-    _topic_word_probs = numpyro.sample('topic_word_probs', dist.Dirichlet(topic_word_pcs).to_event(1))
+    topic_word_probs_val = numpyro.param('topic_word_pcs', jnp.ones((num_topics, num_words)),
+                                         constraint=dist.constraints.simplex)
+    _topic_word_probs = numpyro.sample('topic_word_probs', dist.Delta(topic_word_probs_val).to_event(1))
     amortize_nn = numpyro.module('amortize_nn', stax.serial(
         stax.Dense(num_hidden),
         stax.Relu,
         stax.Dense(num_topics),
-        stax.Sigmoid
+        stax.Softmax
     ), (num_docs, num_max_elements))
     with numpyro.plate('documents', num_docs, dim=-2):
-        document_topic_pcs = amortize_nn(doc_words)[..., None, :] * 1e12 + 1e-12
-        _document_topic_probs = numpyro.sample('topic_probs', dist.Dirichlet(document_topic_pcs))
+        document_topic_pcs = amortize_nn(doc_words)[..., None, :] + 1e-7
+        _document_topic_probs = numpyro.sample('topic_probs', dist.Delta(document_topic_pcs))
+        with numpyro.plate('words', num_max_elements, dim=-1):
+            pass
 
 
 def make_batcher(data, batch_size=32):
@@ -90,14 +90,13 @@ def main(_argv):
                                        max_features=num_words,
                                        stop_words='english')
     newsgroups_docs = count_vectorizer.fit_transform(newsgroups)
-    batch_fn, num_max_elements = make_batcher(newsgroups_docs, batch_size=128)
-    args, _, _, _ = batch_fn(0)
+    batch_fn, num_max_elements = make_batcher(newsgroups_docs, batch_size=1024)
     rng_key = jax.random.PRNGKey(8938)
     stein = Stein(lda, WrappedGuide(lda_guide),
-                  Adam(0.1), ELBO(), RBFKernel(), num_particles=5,
+                  Adam(0.001), ELBO(), RBFKernel(), num_particles=5,
                   num_topics=20, num_words=num_words,
                   num_max_elements=num_max_elements)
-    stein.train(rng_key, 100, batch_fun=batch_fn, callbacks=[Progbar()])
+    stein.train(rng_key, 1, batch_fun=batch_fn, callbacks=[Progbar()])
 
 
 if __name__ == '__main__':
