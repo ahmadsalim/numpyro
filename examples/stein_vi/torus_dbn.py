@@ -146,18 +146,19 @@ def dataloader(*xs, batch_size=32, train_size=None, test_size=None, shuffle=True
             return DataLoaderState(0, rng_key, jnp.arange(len(dxs[0])), max_iter)
 
         def next_step(state):
-            batch = tuple(x[state.indexes[state.iteration * batch_size:(state.iteration + 1) * batch_size]]
+
+            iteration = state.iteration % state.max_iter
+            batch = tuple(x[state.indexes[iteration * batch_size:(iteration + 1) * batch_size]]
                           for x in dxs)
-            iteration = state.iteration + 1
-            if state.iteration + 1 == state.max_iter:
+            if iteration + 1 == state.max_iter:
                 shuffle_rng_key, rng_key = jax.random.split(state.rng_key)
                 if shuffle:
                     indexes = jax.random.shuffle(shuffle_rng_key, state.indexes)
                 else:
                     indexes = state.indexes
-                return batch, DataLoaderState(iteration, rng_key, indexes, state.max_iter)
+                return batch, DataLoaderState(state.iteration + 1, rng_key, indexes, state.max_iter)
             else:
-                return batch, DataLoaderState(iteration, state.rng_key, state.indexes, state.max_iter)
+                return batch, DataLoaderState(state.iteration + 1, state.rng_key, state.indexes, state.max_iter)
 
         return init, next_step
 
