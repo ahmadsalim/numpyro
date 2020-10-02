@@ -337,7 +337,7 @@ class Stein(VI):
         """
         # we split to have the same seed as `update_fn` given a state
         _, rng_key_eval = jax.random.split(state.rng_key)
-        params = self.get_params(state)
+        params = self.optim.get_params(state.optim_state)
         loss_val, _ = self._svgd_loss_and_grads(rng_key_eval, params,
                                                 *args, **kwargs, **self.static_kwargs)
         return loss_val
