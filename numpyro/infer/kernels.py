@@ -31,14 +31,12 @@ class SteinKernel(ABC):
 
     @abstractmethod
     def compute(self, particles: jnp.ndarray, particle_info: Dict[str, Tuple[int, int]],
-                loss_fn: Callable[[jnp.ndarray], float],
-                particle_transform_fn: Callable[[jnp.ndarray], jnp.ndarray]):
+                loss_fn: Callable[[jnp.ndarray], float]):
         """
         Computes the kernel function given the input Stein particles
         :param particles: The Stein particles to compute the kernel from
         :param particle_info: A mapping from parameter names to the position in the particle matrix
         :param loss_fn: Loss function given particles
-        :param particle_transform_fn: Transformation on particles to allow Stein forces to be computed on transformed space
         """
         raise NotImplementedError
 
@@ -64,8 +62,7 @@ class RBFKernel(SteinKernel):
     def _normed(self):
         return self._mode == 'norm' or (self.mode == 'matrix' and self.matrix_mode == 'norm_diag')
 
-    def compute(self, particles, particle_info, loss_fn, particle_transform_fn):
-        particles = jax.vmap(particle_transform_fn)(particles)
+    def compute(self, particles, particle_info, loss_fn):
         diffs = jnp.expand_dims(particles, axis=0) - jnp.expand_dims(particles, axis=1)  # N x N (x D)
         if self._normed() and particles.ndim >= 2:
             diffs = safe_norm(diffs, ord=2, axis=-1)  # N x D -> N
@@ -81,8 +78,6 @@ class RBFKernel(SteinKernel):
             bandwidth = bandwidth[0]
 
         def kernel(x, y):
-            x = particle_transform_fn(x)
-            y = particle_transform_fn(y)
             diff = safe_norm(x - y, ord=2) if self._normed() and x.ndim >= 1 else x - y
             kernel_res = jnp.exp(- diff ** 2 / bandwidth)
             if self._mode == 'matrix':
@@ -121,10 +116,8 @@ class IMQKernel(SteinKernel):
     def mode(self):
         return self._mode
 
-    def compute(self, particles, particle_info, loss_fn, particle_transform_fn):
+    def compute(self, particles, particle_info, loss_fn):
         def kernel(x, y):
-            x = particle_transform_fn(x)
-            y = particle_transform_fn(y)
             diff = safe_norm(x - y, ord=2, axis=-1) if self._mode == 'norm' else x - y
             return (jnp.array(self.const) ** 2 + diff ** 2) ** self.expon
         return kernel
@@ -142,10 +135,8 @@ class LinearKernel(SteinKernel):
     def mode(self):
         return self._mode
 
-    def compute(self, particles: jnp.ndarray, particle_info, loss_fn, particle_transform_fn):
+    def compute(self, particles: jnp.ndarray, particle_info, loss_fn):
         def kernel(x, y):
-            x = particle_transform_fn(x)
-            y = particle_transform_fn(y)
             if x.ndim >= 1:
                 return x @ y + 1
             else:
@@ -175,14 +166,13 @@ class RandomFeatureKernel(SteinKernel):
     def mode(self):
         return self._mode
 
-    def compute(self, particles, particle_info, loss_fn, particle_transform_fn):
+    def compute(self, particles, particle_info, loss_fn):
         if self._random_weights is None:
             self._random_weights = jnp.array(npr.randn(*particles.shape))
             self._random_biases = jnp.array(npr.rand(*particles.shape) * 2 * np.pi)
         factor = self.bandwidth_factor(particles.shape[0])
         if self.bandwidth_subset is not None:
             particles = particles[npr.choice(particles.shape[0], self.bandwidth_subset)]
-        particles = jax.vmap(particle_transform_fn)(particles)
         diffs = jnp.expand_dims(particles, axis=0) - jnp.expand_dims(particles, axis=1)  # N x N x D
         if particles.ndim >= 2:
             diffs = safe_norm(diffs, ord=2, axis=-1)  # N x N x D -> N x N
@@ -198,8 +188,6 @@ class RandomFeatureKernel(SteinKernel):
             return jnp.sqrt(2) * jnp.cos((x @ w + b) / bandwidth)
 
         def kernel(x, y):
-            x = particle_transform_fn(x)
-            y = particle_transform_fn(y)
             ws = self._random_weights if self.random_indices is None else self._random_weights[self.random_indices]
             bs = self._random_biases if self.random_indices is None else self._random_biases[self.random_indices]
             return jnp.sum(jax.vmap(lambda w, b: feature(x, w, b) * feature(y, w, b))(ws, bs))
@@ -224,8 +212,8 @@ class MixtureKernel(SteinKernel):
     def mode(self):
         return self.kernel_fns[0].mode
 
-    def compute(self, particles, particle_info, loss_fn, particle_transform_fn):
-        kernels = [kf.compute(particles, particle_info, loss_fn, particle_transform_fn) for kf in self.kernel_fns]
+    def compute(self, particles, particle_info, loss_fn):
+        kernels = [kf.compute(particles, particle_info, loss_fn) for kf in self.kernel_fns]
 
         def kernel(x, y):
             res = self.ws[0] * kernels[0](x, y)
@@ -268,14 +256,14 @@ class PrecondMatrixKernel(SteinKernel):
     def mode(self):
         return 'matrix'
 
-    def compute(self, particles, particle_info, loss_fn, particle_transform_fn):
+    def compute(self, particles, particle_info, loss_fn):
         qs = self.precond_matrix_fn.compute(particles, loss_fn)
         if self.precond_mode == 'const':
             qs = jnp.expand_dims(jnp.mean(qs, axis=0), axis=0)
         qs_inv = jnp.linalg.inv(qs)
         qs_sqrt = sqrth(qs)
         qs_inv_sqrt = sqrth(qs_inv)
-        inner_kernel = self.inner_kernel_fn.compute(particles, particle_info, loss_fn, particle_transform_fn)
+        inner_kernel = self.inner_kernel_fn.compute(particles, particle_info, loss_fn)
 
         def kernel(x, y):
             if self.precond_mode == 'const':
@@ -308,14 +296,14 @@ class GraphicalKernel(SteinKernel):
     def mode(self):
         return 'matrix'
 
-    def compute(self, particles, particle_info, loss_fn, particle_transform_fn):
+    def compute(self, particles, particle_info, loss_fn):
         local_kernels = []
         for pk, (start_idx, end_idx) in particle_info.items():
             pk_kernel_fn = self.local_kernel_fns.get(pk, self.default_kernel_fn)
             pk_loss_fn = lambda ps: loss_fn(
                 jnp.concatenate([particles[:, :start_idx], ps, particles[:, end_idx:]], axis=-1))
             pk_kernel = pk_kernel_fn.compute(particles[:, start_idx:end_idx], {pk: (0, end_idx - start_idx)},
-                                             pk_loss_fn, particle_transform_fn)
+                                             pk_loss_fn)
             local_kernels.append((pk_kernel, pk_kernel_fn.mode, start_idx, end_idx))
 
         def kernel(x, y):

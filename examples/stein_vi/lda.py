@@ -94,7 +94,7 @@ def main(_argv):
                   Adam(0.001), ELBO(), RBFKernel(), num_particles=5,
                   num_topics=20, num_words=num_words,
                   num_max_elements=num_max_elements)
-    stein.train(rng_key, 10_000, batch_fun=batch_fn, callbacks=[Progbar()])
+    stein.train(rng_key, 1000, batch_fun=batch_fn, callbacks=[Progbar()])
 
 
 if __name__ == '__main__':

@@ -136,36 +136,44 @@ class Stein(VI):
                                       self.guide, *args, **kwargs)
             return - loss_val
 
-        kernel_particle_loss_fn = lambda ps: scaled_loss(rng_key, self.constrain_fn(classic_uparams),
-                                                         self.constrain_fn(unravel_pytree(ps)))
-        loss, particle_ljp_grads = jax.vmap(jax.value_and_grad(kernel_particle_loss_fn))(stein_particles)
+        def kernel_particle_loss_fn(ps):
+            return scaled_loss(rng_key, self.constrain_fn(classic_uparams),
+                               self.constrain_fn(unravel_pytree(ps)))
+
+        def particle_transform_fn(particle):
+            params = unravel_pytree(particle)
+            tparams = self.particle_transform_fn(params)
+            tparticle, _ = ravel_pytree(tparams)
+            return tparticle
+
+        tstein_particles = jax.vmap(particle_transform_fn)(stein_particles)
+
+        loss, particle_ljp_grads = jax.vmap(jax.value_and_grad(kernel_particle_loss_fn))(tstein_particles)
         classic_param_grads = jax.vmap(lambda ps: jax.grad(lambda cps:
                                                            scaled_loss(rng_key, self.constrain_fn(cps),
                                                                        self.constrain_fn(unravel_pytree(ps))))(
             classic_uparams))(stein_particles)
         classic_param_grads = tree_map(partial(jnp.mean, axis=0), classic_param_grads)
 
-        def particle_transform_fn(particle):
-            params = unravel_pytree(particle)
-            tparams = self.particle_transform_fn(params)
-            tparticle, _ = ravel_pytree(tparams)
-            # TODO: Figure out what to do with transformations that are not shape preserving
-            assert particle.shape == tparticle.shape
-            return tparticle
-
         # 3. Calculate kernel on monolithic particle
-        kernel = self.kernel_fn.compute(stein_particles, particle_info, kernel_particle_loss_fn,
-                                        particle_transform_fn)
+        kernel = self.kernel_fn.compute(stein_particles, particle_info, kernel_particle_loss_fn)
 
         # 4. Calculate the attractive force and repulsive force on the monolithic particles
         attractive_force = jax.vmap(lambda y: jnp.sum(
-            jax.vmap(lambda x, x_ljp_grad: self._apply_kernel(kernel, x, y, x_ljp_grad))(stein_particles,
+            jax.vmap(lambda x, x_ljp_grad: self._apply_kernel(kernel, x, y, x_ljp_grad))(tstein_particles,
                                                                                          particle_ljp_grads), axis=0))(
-            stein_particles)
+            tstein_particles)
         repulsive_force = jax.vmap(lambda y: jnp.sum(
-            jax.vmap(lambda x: self.repulsion_temperature * self._kernel_grad(kernel, x, y))(stein_particles), axis=0))(
-            stein_particles)
-        particle_grads = (attractive_force + repulsive_force) / self.num_particles
+            jax.vmap(lambda x: self.repulsion_temperature * self._kernel_grad(kernel, x, y))(tstein_particles),
+            axis=0))(
+            tstein_particles)
+
+        def single_particle_grad(particle, att_force, rep_force):
+            reparam_jac = jax.jacfwd(particle_transform_fn)(particle)
+            return (att_force + rep_force) @ reparam_jac
+
+        particle_grads = jax.vmap(single_particle_grad)(stein_particles, attractive_force,
+                                                        repulsive_force) / self.num_particles
 
         # 5. Decompose the monolithic particle forces back to concrete parameter values
         stein_param_grads = unravel_pytree_batched(particle_grads)
