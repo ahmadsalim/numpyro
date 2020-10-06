@@ -33,9 +33,9 @@ class WrappedGuide(ReinitGuide):
         def _find_valid_params(rng_key):
             guide_trace = handlers.trace(handlers.seed(self.fn, rng_key)).get_trace(*args, **kwargs)
             params = {name: site['value'] for name, site in guide_trace.items()
-                      if site['type'] == 'param' and self.reinit_hide_fn(site)}
+                      if site['type'] == 'param' and self._reinit_hide_fn(site)}
             for site in guide_trace.values():
-                if site['type'] == 'param' and not self.reinit_hide_fn(site):
+                if site['type'] == 'param' and not self._reinit_hide_fn(site):
                     params[site['name']] = self.init_strategy(site, reinit_param=lambda _: True)
             return params
 

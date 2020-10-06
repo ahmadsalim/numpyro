@@ -7,6 +7,8 @@ from jax import ops
 from jax.experimental import stax
 import jax.numpy as jnp
 
+import numpy as np
+
 from numpyro.nn.masked_dense import MaskedDense
 
 
@@ -61,7 +63,7 @@ def create_mask(input_dim, hidden_dims, permutation, output_dim_multiplier):
     return masks, mask_skip
 
 
-def AutoregressiveNN(input_dim, hidden_dims, param_dims=[1, 1], permutation=None,
+def AutoregressiveNN(input_dim, hidden_dims, param_dims=None, permutation=None,
                      skip_connections=False, nonlinearity=stax.Relu):
     """
     An implementation of a MADE-like auto-regressive neural network.
@@ -97,12 +99,14 @@ def AutoregressiveNN(input_dim, hidden_dims, param_dims=[1, 1], permutation=None
     MADE: Masked Autoencoder for Distribution Estimation [arXiv:1502.03509]
     Mathieu Germain, Karol Gregor, Iain Murray, Hugo Larochelle
     """
+    if param_dims is None:
+        param_dims = [1, 1]
     output_multiplier = sum(param_dims)
-    all_ones = (jnp.array(param_dims) == 1).all()
+    all_ones = (np.array(param_dims) == 1).all()
 
     # Calculate the indices on the output corresponding to each parameter
-    ends = jnp.cumsum(jnp.array(param_dims), axis=0)
-    starts = jnp.concatenate((jnp.zeros(1), ends[:-1]))
+    ends = np.cumsum(np.array(param_dims), axis=0)
+    starts = np.concatenate((np.zeros(1), ends[:-1]))
     param_slices = [slice(int(s), int(e)) for s, e in zip(starts, ends)]
 
     # Hidden dimension must be not less than the input otherwise it isn't
