@@ -17,7 +17,6 @@ sys.path.append('/home/lys/Dropbox/PhD/numpyro/numpyro/contrib/')
 sys.path.append('/home/lys/Dropbox/PhD/numpyro/numpyro/examples/')
 
 from hmcecs import HMCECS
-from hmcecs_utils import poisson_samples_correction
 #from numpyro.contrib.hmcecs import HMC
 
 from sklearn.datasets import load_breast_cancer
@@ -147,13 +146,15 @@ def infer_hmcecs(rng_key, feats, obs, m=None,g=None,n_samples=None, warmup=None,
     start = time.time()
     extra_fields = []
     if estimator == "poisson":
-        postprocess_fn = None # poisson_samples_correction
         extra_fields = ("sign",)
     kernel = HMCECS(model=model,z_ref=z_ref,m=m,g=g,algo=algo,
                     subsample_method=subsample_method,proxy=proxy,svi_fn=svi,
-                    estimator = estimator,target_accept_prob=0.8)#,postprocess_fn=postprocess_fn)
-
-    mcmc = MCMC(kernel,num_warmup=warmup,num_samples=n_samples,num_chains=1,postprocess_fn=postprocess_fn)
+                    estimator = estimator,target_accept_prob=0.8)
+    post_fn=None
+    if estimator == "poisson":
+        extra_fields = ("sign",)
+        post_fn = kernel._postprocess_fn
+    mcmc = MCMC(kernel,num_warmup=warmup,num_samples=n_samples,num_chains=1,postprocess_fn=post_fn)
     mcmc.run(rng_key,feats,obs,extra_fields=extra_fields)
     extra_fields = mcmc.get_extra_fields()
     stop = time.time()
@@ -166,7 +167,9 @@ def infer_hmcecs(rng_key, feats, obs, m=None,g=None,n_samples=None, warmup=None,
     file_hyperparams.write('Estimator: {}\n'.format(estimator))
     file_hyperparams.write('...........................................\n')
     file_hyperparams.close()
-    #print(mcmc.get_samples().keys())
+    print("get samples")
+    print(mcmc.get_samples())
+    #print(mcmc.get_samples())
     save_obj(mcmc.get_samples(),"{}/MCMC_Dict_Samples_{}_m_{}.pkl".format("PLOTS_{}".format(now.strftime("%Y_%m_%d_%Hh%Mmin%Ss%fms")),subsample_method,m))
 
     return mcmc.get_samples()

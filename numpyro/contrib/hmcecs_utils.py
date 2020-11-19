@@ -240,6 +240,7 @@ def split_list(lst, n):
             yield tuple( map(lst.__getitem__, [i,i+n]))
         else:
             break
+
 def signed_estimator(model, model_args, model_kwargs, z, l, proxy_fn, proxy_u_fn):
     """
     Estimate the gradient potential estimate
@@ -280,9 +281,4 @@ def signed_estimator(model, model_args, model_kwargs, z, l, proxy_fn, proxy_u_fn
     return neg_ll, sign
 
 
-
-def poisson_samples_correction(*args,**kwargs):
-    "Changes the support of the samples by using the sign from the "
-
-    return args
 

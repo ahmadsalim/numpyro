@@ -31,7 +31,7 @@ from hmcecs_utils import potential_est, init_near_values,tuplemerge,\
 HMCState = namedtuple('HMCState', ['i', 'z', 'z_grad', 'potential_energy', 'energy', 'num_steps', 'accept_prob',
                                    'mean_accept_prob', 'diverging', 'adapt_state','rng_key'])
 
-HMCECSState = namedtuple("HMCECState",['u', 'hmc_state', 'll_u','sign'])
+HMCECSState = namedtuple("HMCECState",['u', 'hmc_state', 'll_u','sign','z_and_sign'])
 
 """
 A :func:`~collections.namedtuple` consisting of the following fields:
@@ -251,6 +251,7 @@ def hmc(potential_fn=None, potential_fn_gen=None, kinetic_fn=None, grad_potentia
                     model_kwargs=None,
                     model = None,
                     sign = None,
+                    sign_sum=None,
                     ll_ref=None,
                     jac_all=None,
                     z_ref= None,
@@ -380,7 +381,10 @@ def hmc(potential_fn=None, potential_fn_gen=None, kinetic_fn=None, grad_potentia
         hmc_state = HMCState(0, vv_state.z, vv_state.z_grad, vv_state.potential_energy, energy,
                              0, 0., 0., False, wa_state,rng_key_hmc)
 
-        hmc_sub_state = HMCECSState(u=u, hmc_state=hmc_state,ll_u=ll_u,sign=sign)
+        #TODO: sign_sum = sign_sum + sign ? only for warm up?
+        z_and_sign  = {**vv_state.z, 'sign': sign, "sign_sum":sign_sum }
+
+        hmc_sub_state = HMCECSState(u=u, hmc_state=hmc_state,ll_u=ll_u,sign=sign,z_and_sign=z_and_sign)
 
         hmc_state = tuplemerge(hmc_sub_state._asdict(),hmc_state._asdict())
 
@@ -396,7 +400,7 @@ def hmc(potential_fn=None, potential_fn_gen=None, kinetic_fn=None, grad_potentia
                   ll_ref = None,jac_all = None,z = None,z_ref = None,hess_all = None,ll_u = None,u = None,
                   n = None,
                   m = None,
-                  l=None):
+                  l=None,):
         if potential_fn_gen:
             if grad_potential_fn_gen:
                 kwargs = {} if model_kwargs is None else model_kwargs
@@ -513,7 +517,9 @@ def hmc(potential_fn=None, potential_fn_gen=None, kinetic_fn=None, grad_potentia
                       hess_all=None,
                       ll_u=None,
                       sign = None,
-                      u=None,n=None,m=None,l=None):
+                      u=None,n=None,m=None,l=None,
+                      z_and_sign=None,
+                      sign_sum=None):
         """
         Given an existing :data:`~numpyro.infer.mcmc.HMCState`, run HMC with fixed (possibly adapted)
         step size and return a new :data:`~numpyro.infer.mcmc.HMCState`.
@@ -578,15 +584,11 @@ def hmc(potential_fn=None, potential_fn_gen=None, kinetic_fn=None, grad_potentia
         hmcstate = HMCState(itr, vv_state.z, vv_state.z_grad, vv_state.potential_energy, energy, num_steps,
                         accept_prob, mean_accept_prob, diverging, adapt_state,rng_key)
 
-        # Highlight: The accepted proposals samples are in vv_state.z /hmcstate.z, as we return them, we change their sign
-        # #TODO: Make this prettier
-        # if subsample_method == "perturb" and estimator == "poisson" and itr > wa_steps:
-        #             z_new={}
-        #             for x,y in hmcstate.z.items():
-        #                 z_new[x] = y*sign[-1]
-        #             hmcstate = hmcstate._replace(z=z_new)
-
-        hmc_sub_state = HMCECSState(u=u, hmc_state=hmc_state,ll_u=ll_u,sign = sign)
+        # Highlight: The accepted proposals samples are in vv_state.z /hmcstate.z, we store them together with the sign
+        if hmc_state.i < wa_steps:
+            sign_sum = 0
+        z_and_sign = {**vv_state.z, 'sign': sign,"sign_sum":sign_sum}
+        hmc_sub_state = HMCECSState(u=u, hmc_state=hmc_state,ll_u=ll_u,sign = sign,z_and_sign=z_and_sign)
         hmcstate = tuplemerge(hmc_sub_state._asdict(),hmcstate._asdict())
 
         return hmcstate
@@ -701,6 +703,7 @@ class HMCECS(MCMCKernel):
         self._ll_u = None
         self._u = None
         self._sign = None
+        self._sign_sum = 0
         self._l = 100
         # Set on first call to init
         self._init_fn = None
@@ -764,6 +767,7 @@ class HMCECS(MCMCKernel):
                     dynamic_args=True,
                     model_args=tuple([arg[0] for arg in next(chain(init_model_args))]), #Highlight:Pick the first non-empty block ; 'chain' joins all the elements in the sublist , len(lists_of_lists) = n , len(chain(list_of_lists)) = sum(n_elements_inside_list=*n)
                     model_kwargs=model_kwargs)
+                self._postprocess_fn = self._poisson_samples_correction
 
 
             else:
@@ -831,7 +835,10 @@ class HMCECS(MCMCKernel):
 
     @property
     def sample_field(self):
-        return 'z'
+        if self.estimator=="poisson":
+            return "z_and_sign"
+        else:
+            return "z"
 
     @property
     def default_fields(self):
@@ -892,6 +899,7 @@ class HMCECS(MCMCKernel):
                                           u = self._u,
                                           l = self._l,
                                           sign = self._sign,
+                                          sign_sum = self._sign_sum,
                                           proxy_fn = self._proxy_fn,
                                           proxy_u_fn = self._proxy_u_fn)
 
@@ -917,7 +925,6 @@ class HMCECS(MCMCKernel):
                     self._sign = jnp.array(sign) #Highlight, do not append the sign here, not necessary
                     self._ll_u = neg_ll
 
-
                 else:
                     self._ll_u = potential_est(model=self._model,
                                                model_args=model_args_sub(self._u, model_args),
@@ -927,9 +934,12 @@ class HMCECS(MCMCKernel):
                                                m=self.m,
                                                proxy_fn=self._proxy_fn,
                                                proxy_u_fn=self._proxy_u_fn)
+                z_and_sign = {**init_state.z, 'sign': self._sign,"sign_sum":self._sign_sum} #,"num_warmup":num_warmup}
                 hmc_init_sub_state =  HMCECSState(u=self._u,
                                                   hmc_state=init_state.hmc_state,
-                                                  ll_u=self._ll_u,sign=self._sign)
+                                                  ll_u=self._ll_u,
+                                                  sign=self._sign,
+                                                  z_and_sign=z_and_sign)
                 init_sub_state  = tuplemerge(init_state._asdict(),hmc_init_sub_state._asdict())
 
                 return init_sub_state
@@ -940,7 +950,6 @@ class HMCECS(MCMCKernel):
                 # wa_steps because those variables do not depend on traced args: init_params, rng_key.
                 init_state = vmap(hmc_init_fn)(init_params, rng_key)
                 if self.estimator == "poisson":
-                    #model_args = [model_args_sub(u_i, model_args)for u_i in self._u]
                     neg_ll, sign = signed_estimator(model=self._model,
                                                     model_args=[model_args_sub(u_i, model_args)for u_i in self._u],
                                                     model_kwargs= model_kwargs_sub,
@@ -960,8 +969,8 @@ class HMCECS(MCMCKernel):
                                                m=self.m,
                                                proxy_fn=self._proxy_fn,
                                                proxy_u_fn=self._proxy_u_fn)
-
-                hmc_init_sub_fn = lambda init_params, rng_key: HMCECSState(u=self._u, hmc_state=init_state, ll_u=self._ll_u,sign = self._sign)
+                z_and_sign = {**vv_state.z, 'sign': self._sign,"sign_sum":self._sign_sum }
+                hmc_init_sub_fn = lambda init_params, rng_key: HMCECSState(u=self._u, hmc_state=init_state, ll_u=self._ll_u,sign = self._sign,z_and_sign=z_and_sign)
 
                 init_subsample_state = vmap(hmc_init_sub_fn)(init_params,rng_key)
 
@@ -998,10 +1007,25 @@ class HMCECS(MCMCKernel):
                 self._sample_fn = sample_fn
                 return init_state
 
+    def _poisson_postprocess(self,states):
+        """Changes the support of the samples by using the sign estimated during the sampling
+        Ir = Sum [z_j*sign_j] / Sum (sign_j)"""
+        print(states.keys())
+        print("total")
+        print(states["sign_sum"])
+        states["theta"] = states["theta"]*states["sign"]/states["sign_sum"]
+        return states
+
+    def _poisson_samples_correction(self,states,*args, **kwargs):
+        """Changes the support of the samples by using the sign estimated during the sampling
+        Ir = Sum [z_j*sign_j] / Sum (sign_j)"""
+        return self._poisson_postprocess
+
     def postprocess_fn(self, args, kwargs):
         if self._postprocess_fn is None:
             return identity
-        return self._postprocess_fn(*args, **kwargs)
+        else:
+            return self._postprocess_fn(*args, **kwargs)
 
     def sample(self, state, model_args, model_kwargs):
         """
@@ -1027,8 +1051,7 @@ class HMCECS(MCMCKernel):
                                                 proxy_fn = self._proxy_fn,
                                                 proxy_u_fn = self._proxy_u_fn)
                 self._sign=jnp.array(sign)
-                #self._sign = jnp.append(self._sign,jnp.array([sign]),axis=0)
-                #self._sign = self._sign[jnp.isfinite(self._sign)] #remove dummy start point, since we annot initialize empty arrays
+                state.z_and_sign["sign_sum"] += self._sign
                 # Correct the negativeloglikelihood by substracting the density of the prior to calculate the potential
                 llu_new = jnp.min(jnp.array([0, -neg_ll + state.ll_u]))
 
@@ -1053,9 +1076,9 @@ class HMCECS(MCMCKernel):
 
 
             ######## UPDATE PARAMETERS ##########
-            hmc_subsamplestate = HMCECSState(u=u, hmc_state=state.hmc_state,ll_u=ll_u,sign=self._sign)
+            z_and_sign = {**state.z, 'sign': self._sign,"sign_sum":self._sign_sum}
+            hmc_subsamplestate = HMCECSState(u=u, hmc_state=state.hmc_state,ll_u=ll_u,sign=self._sign,z_and_sign=z_and_sign)
             hmc_subsamplestate = tuplemerge(hmc_subsamplestate._asdict(),state._asdict())
-
             return self._sample_fn(hmc_subsamplestate,
                                    model_args=model_args,
                                    model_kwargs=model_kwargs,
@@ -1074,7 +1097,9 @@ class HMCECS(MCMCKernel):
                                    n= self._n,
                                    m= self.m,
                                    l=self._l,
-                                   sign = self._sign)
+                                   sign = self._sign,
+                                   sign_sum = state.z_and_sign["sign_sum"],
+                                   z_and_sign=z_and_sign)
 
         else:
             return self._sample_fn(state, model_args, model_kwargs)
