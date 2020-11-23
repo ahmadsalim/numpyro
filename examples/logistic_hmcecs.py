@@ -84,7 +84,6 @@ def infer_hmc(rng_key, feats, obs, samples, warmup ):
     kernel = HMC(model=model,target_accept_prob=0.8)
     mcmc = MCMC(kernel, num_warmup=warmup, num_samples=samples)
     mcmc.run(rng_key, feats, obs)
-    #mcmc.print_summary()
     samples = mcmc.get_samples()
     samples = tree_map(lambda x: x[None, ...], samples)
     r_hat_average = np_jax.sum(summary(samples)["theta"]["r_hat"])/len(summary(samples)["theta"]["r_hat"])
@@ -101,9 +100,9 @@ def infer_hmcecs(rng_key, feats, obs, m=None,g=None,n_samples=None, warmup=None,
     file_hyperparams = open("PLOTS_{}/Hyperparameters_{}.txt".format(now.strftime("%Y_%m_%d_%Hh%Mmin%Ss%fms"),now.strftime("%Y_%m_%d_%Hh%Mmin%Ss%fms")), "a")
 
     if subsample_method=="perturb" and proxy== "taylor":
-        map_samples = 10
-        map_warmup = 5
-        factor_NUTS = 50
+        map_samples = 100
+        map_warmup = 50
+        factor_NUTS = 500
         if map_method == "NUTS":
             print("Running NUTS for map estimation {} + {} samples".format(map_samples,map_warmup))
             file_hyperparams.write('MAP samples : {} \n'.format(map_samples))
@@ -125,8 +124,8 @@ def infer_hmcecs(rng_key, feats, obs, m=None,g=None,n_samples=None, warmup=None,
         save_obj(z_ref,"{}/MAP_Dict_Samples_MAP_{}.pkl".format("PLOTS_{}".format(now.strftime("%Y_%m_%d_%Hh%Mmin%Ss%fms")), map_method))
         print("Running MCMC subsampling with Taylor proxy")
     elif subsample_method =="perturb" and proxy=="svi":
-        factor_SVI = obs.shape[0]
-        batch_size = 32 #int(factor_SVI//10)
+        factor_SVI = 5000
+        batch_size = int(factor_SVI//10)
         print("Running SVI for map estimation with svi proxy")
         file_hyperparams.write('SVI epochs : {} \n'.format(num_epochs))
         map_key, post_key = jax.random.split(map_key)
@@ -144,9 +143,8 @@ def infer_hmcecs(rng_key, feats, obs, m=None,g=None,n_samples=None, warmup=None,
         svi = None
 
     start = time.time()
-    extra_fields = []
-    if estimator == "poisson":
-        extra_fields = ("sign",)
+    extra_fields = ()
+
     kernel = HMCECS(model=model,z_ref=z_ref,m=m,g=g,algo=algo,
                     subsample_method=subsample_method,proxy=proxy,svi_fn=svi,
                     estimator = estimator,target_accept_prob=0.8)
@@ -154,6 +152,7 @@ def infer_hmcecs(rng_key, feats, obs, m=None,g=None,n_samples=None, warmup=None,
     if estimator == "poisson":
         extra_fields = ("sign",)
         post_fn = kernel._postprocess_fn
+
     mcmc = MCMC(kernel,num_warmup=warmup,num_samples=n_samples,num_chains=1,postprocess_fn=post_fn)
     mcmc.run(rng_key,feats,obs,extra_fields=extra_fields)
     extra_fields = mcmc.get_extra_fields()
@@ -167,9 +166,6 @@ def infer_hmcecs(rng_key, feats, obs, m=None,g=None,n_samples=None, warmup=None,
     file_hyperparams.write('Estimator: {}\n'.format(estimator))
     file_hyperparams.write('...........................................\n')
     file_hyperparams.close()
-    print("get samples")
-    print(mcmc.get_samples())
-    #print(mcmc.get_samples())
     save_obj(mcmc.get_samples(),"{}/MCMC_Dict_Samples_{}_m_{}.pkl".format("PLOTS_{}".format(now.strftime("%Y_%m_%d_%Hh%Mmin%Ss%fms")),subsample_method,m))
 
     return mcmc.get_samples()
@@ -228,16 +224,22 @@ def Folders(folder_name):
         shutil.rmtree(newpath)  # removes all the subdirectories!
         os.makedirs(newpath,0o777)
 def Plot_KL(map_method,ecs_algo,algo,proxy,estimator,n_samples,n_warmup,epochs):
-    factor_ECS= 50 #obs.shape[0]
+    factor_ECS= 50000#obs.shape[0]
     m = [int(np_jax.sqrt(obs[:factor_ECS].shape[0])),2*int(np_jax.sqrt(obs[:factor_ECS].shape[0])),4*int(np_jax.sqrt(obs[:factor_ECS].shape[0])),8*int(np_jax.sqrt(obs[:factor_ECS].shape[0]))]
     g = 5
-    factor_NUTS = 50
+    factor_NUTS = 500
     colors = cm.rainbow(np.linspace(0, 1, len(m)))
-    run_test = False
+    run_test = True
     if run_test:
         print("Running standard NUTS")
-        est_posterior_NUTS = infer_hmcecs(rng_key, feats=feats[:factor_NUTS], obs=obs[:factor_NUTS],
-                                      n_samples=n_samples, warmup=n_warmup, m="all", g=g, algo=algo)
+        #est_posterior_NUTS = infer_hmcecs(rng_key, feats=feats[:factor_NUTS], obs=obs[:factor_NUTS],n_samples=n_samples, warmup=n_warmup, m="all", g=g, algo=algo) #TODO: Fix
+
+        if algo == "NUTS":
+
+            est_posterior_NUTS,_ = samples,r_hat_average = infer_nuts(rng_key, feats[:factor_NUTS], obs[:factor_NUTS],samples=n_samples,warmup=n_warmup)
+        else:
+            est_posterior_NUTS, _ = samples, r_hat_average = infer_hmc(rng_key, feats[:factor_NUTS], obs[:factor_NUTS],
+                                                                        samples=n_samples, warmup=n_warmup)
     for m_val, color in zip(m,colors):
         est_posterior_ECS = infer_hmcecs(rng_key, feats=feats[:factor_ECS], obs=obs[:factor_ECS],
                                          n_samples=n_samples,
@@ -262,7 +264,6 @@ def Plot_KL(map_method,ecs_algo,algo,proxy,estimator,n_samples,n_warmup,epochs):
              estimator = estimator,
              m = m_val,
              kl=kl)
-        exit()
 
 def Tests(map_method,ecs_algo,algo,estimator,n_samples,n_warmup,epochs,proxy):
     m = int(np_jax.sqrt(obs.shape[0])*2)
@@ -292,14 +293,14 @@ def Tests(map_method,ecs_algo,algo,estimator,n_samples,n_warmup,epochs,proxy):
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('-num_samples', nargs='?', default=10,type=int)
-    parser.add_argument('-num_warmup', nargs='?', default=5, type=int)
+    parser.add_argument('-num_samples', nargs='?', default=100,type=int)
+    parser.add_argument('-num_warmup', nargs='?', default=50, type=int)
     parser.add_argument('-ecs_algo', nargs='?', default="NUTS", type=str)
-    parser.add_argument('-ecs_proxy', nargs='?', default="taylor", type=str)
+    parser.add_argument('-ecs_proxy', nargs='?', default="svi", type=str)
     parser.add_argument('-algo', nargs='?', default="HMC", type=str)
     parser.add_argument('-estimator', nargs='?', default="poisson", type=str)
     parser.add_argument('-map_init', nargs='?', default="NUTS", type=str)
-    parser.add_argument("-epochs",default=10,type=int)
+    parser.add_argument("-epochs",default=100,type=int)
     args = parser.parse_args()
 
 
@@ -318,7 +319,7 @@ if __name__ == '__main__':
     file_hyperparams.write('ECS proxy : {} \n'.format(args.ecs_proxy))
     file_hyperparams.write('MAP init : {} \n'.format(args.map_init))
 
-    higgs = False
+    higgs = True
     if higgs:
         feats,obs = higgs_data()
         file_hyperparams.write('Dataset : HIGGS \n')

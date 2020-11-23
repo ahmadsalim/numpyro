@@ -236,7 +236,7 @@ def neural_proxy():
 def split_list(lst, n):
     """Pair up the split model arguments back."""
     for i in range(0, len(lst), n):
-        if i+n < len(lst)-1: #TODO: Change back to len(lst), after debugging
+        if i+n < len(lst): #TODO: Change back to len(lst), after debugging
             yield tuple( map(lst.__getitem__, [i,i+n]))
         else:
             break

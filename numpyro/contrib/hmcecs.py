@@ -743,7 +743,7 @@ class HMCECS(MCMCKernel):
                 self._init_subsample_state(rng_key, model_args, model_kwargs, init_params, self.z_ref)
                 self._proxy_fn,self._proxy_u_fn = taylor_proxy(self.z_ref, self._model, self._ll_ref, self._jac_all, self._hess_all)
             if self.estimator =="poisson":
-                self._l = 25 # lambda subsamples
+                self._l = 50 # lambda subsamples
                 self._u = _sample_u_poisson(rng_key, self.m, self._l)
 
                 self._potential_fn = lambda model,model_args,model_kwargs,z,l, proxy_fn,proxy_u_fn : lambda z:signed_estimator(model = model,model_args=model_args,
@@ -842,7 +842,7 @@ class HMCECS(MCMCKernel):
 
     @property
     def default_fields(self):
-        return ('z', 'diverging','sign')
+        return ('z', 'diverging','sign',"z_and_sign")
 
     def get_diagnostics_str(self, state):
         return '{} steps of size {:.2e}. acc. prob={:.2f}'.format(state.num_steps,
@@ -1008,16 +1008,14 @@ class HMCECS(MCMCKernel):
                 return init_state
 
     def _poisson_postprocess(self,states):
-        """Changes the support of the samples by using the sign estimated during the sampling
+        """Changes the support of the parameters samples by using the sign estimated during the sampling
         Ir = Sum [z_j*sign_j] / Sum (sign_j)"""
-        print(states.keys())
-        print("total")
-        print(states["sign_sum"])
-        states["theta"] = states["theta"]*states["sign"]/states["sign_sum"]
-        return states
+        states_params = {k: states[k] for k in states.keys() - {'sign', 'sign_sum'}} #change the support for all the parameters sampled
+        states_params = {key: (states_params[key]*states["sign"])/states["sign"] for key in states_params.keys()}
+        return states_params
 
     def _poisson_samples_correction(self,states,*args, **kwargs):
-        """Changes the support of the samples by using the sign estimated during the sampling
+        """Changes the support of the samples by using the sign estimated during the samplinghttps://github.com/pyro-ppl/funsor
         Ir = Sum [z_j*sign_j] / Sum (sign_j)"""
         return self._poisson_postprocess
 
@@ -1025,6 +1023,7 @@ class HMCECS(MCMCKernel):
         if self._postprocess_fn is None:
             return identity
         else:
+            print("here4")
             return self._postprocess_fn(*args, **kwargs)
 
     def sample(self, state, model_args, model_kwargs):

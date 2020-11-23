@@ -26,7 +26,7 @@ def svi_map(model, rng_key, feats,obs,num_epochs,batch_size):
     """
     from jax import random, jit
     from numpyro import optim
-    from numpyro.infer.elbo import RenyiELBO, ELBO
+    from numpyro.infer.elbo import RenyiELBO, ELBO,Trace_ELBO
     from numpyro.infer.svi import SVI
     from numpyro.util import fori_loop
     import time
@@ -38,7 +38,7 @@ def svi_map(model, rng_key, feats,obs,num_epochs,batch_size):
     #guide = AutoDelta(model)
     guide = AutoDiagonalNormal(model)
     #loss = RenyiELBO(alpha=2, num_particles=1)
-    loss = ELBO()
+    loss = Trace_ELBO()
     svi = SVI(model, guide, optim.Adam(0.0003), loss=loss)
     svi_state = svi.init( rng_key,feats,obs)
     train_init, train_fetch = load_dataset(obs,feats, batch_size=batch_size)
