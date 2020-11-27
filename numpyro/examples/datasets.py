@@ -46,6 +46,14 @@ MNIST = dset('mnist', [
 ])
 
 
+FASHION_MNIST = dset('fashion_mnist', [
+    'https://github.com/zalandoresearch/fashion-mnist/blob/master/data/fashion/t10k-images-idx3-ubyte.gz?raw=true',
+    'https://github.com/zalandoresearch/fashion-mnist/blob/master/data/fashion/t10k-labels-idx1-ubyte.gz?raw=true',
+    'https://github.com/zalandoresearch/fashion-mnist/blob/master/data/fashion/train-images-idx3-ubyte.gz?raw=true',
+    'https://github.com/zalandoresearch/fashion-mnist/blob/master/data/fashion/train-labels-idx1-ubyte.gz?raw=true'
+])
+
+
 SP500 = dset('SP500', [
     'https://d2hg8soec8ck9v.cloudfront.net/datasets/SP500.csv',
 ])
@@ -107,8 +115,15 @@ def _load_covtype():
     }
 
 
-def _load_mnist():
-    _download(MNIST)
+def _load_mnist(dataset_type='numbers'):
+    dataset = None
+    if dataset_type == 'numbers':
+        dataset = MNIST
+    elif dataset_type == 'fashion':
+        dataset = FASHION_MNIST
+    else:
+        assert "Unsupported dataset type: ", dataset_type
+    _download(dataset)
 
     def read_label(file):
         with gzip.open(file, 'rb') as f:
@@ -123,7 +138,7 @@ def _load_mnist():
             return device_put(data.reshape(-1, nrows, ncols))
 
     files = [os.path.join(DATA_DIR, os.path.basename(urlparse(url).path))
-             for url in MNIST.urls]
+             for url in dataset.urls]
     return {'train': (read_img(files[0]), read_label(files[1])),
             'test': (read_img(files[2]), read_label(files[3]))}
 
@@ -225,7 +240,9 @@ def _load(dset):
     elif dset == COVTYPE:
         return _load_covtype()
     elif dset == MNIST:
-        return _load_mnist()
+        return _load_mnist(dataset_type='numbers')
+    elif dset == FASHION_MNIST:
+        return _load_mnist(dataset_type='fashion')
     elif dset == SP500:
         return _load_sp500()
     elif dset == UCBADMIT:
