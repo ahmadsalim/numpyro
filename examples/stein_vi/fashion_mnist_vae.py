@@ -80,7 +80,9 @@ def _show_mnist(images):
 
 
 def main(_argv):
-    num_steps = 10000
+    numpyro.set_platform('gpu')
+    numpyro.enable_validation()
+    num_steps = 50000
     rng_key = jax.random.PRNGKey(randint(0, 10000))
     svi = SVI(model, guide, Adam(1e-3), ELBO())
     init, get_batch = load_dataset(FASHION_MNIST, 32)
@@ -96,7 +98,6 @@ def main(_argv):
         return (batch,), {}, epoch, is_last
 
     _show_mnist(test_batch)
-    numpyro.enable_validation()
     history = History()
     svi_state, loss = svi.train(rng_key, num_steps, batch_fun=batch_fun,
                                 callbacks=[Progbar(), history])
