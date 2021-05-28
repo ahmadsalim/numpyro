@@ -1,12 +1,17 @@
 # Copyright Contributors to the Pyro project.
 # SPDX-License-Identifier: Apache-2.0
 
+import functools
 import math
+import operator
+import warnings
+from math import pi
 
-from jax import lax
+import jax
 import jax.numpy as jnp
 import jax.random as random
-from jax.scipy.special import erf, i0e, i1e
+from jax import lax
+from jax.scipy.special import erf, i0e, i1e, logsumexp
 
 from numpyro.distributions import constraints
 from numpyro.distributions.distribution import Distribution
@@ -15,8 +20,71 @@ from numpyro.distributions.util import (
     promote_shapes,
     safe_normalize,
     validate_sample,
-    von_mises_centered,
+    von_mises_centered, lazy_property,
 )
+
+
+def _numel(shape):
+    return functools.reduce(operator.mul, shape, 1)
+
+
+def log_im(order, x):  ## x is a parameter, like k1 or k2
+    # Based on '_log_modified_bessel_fn'
+    # Tanabe, A., Fukumizu, K., Oba, S., Takenouchi, T., & Ishii, S. (2007).
+    # Parameter estimation for von Mises–Fisher distributions. Computational Statistics, 22(1), 145-157.
+    """ terms to sum over, 10 by 'shape of x' and sums over the first dimension """
+    """ vectorized logarithmic Im """
+    s = jnp.arange(0, 251).reshape(251, 1)
+    fs = 2 * s * (jnp.log(x) - math.log(2)) - jax.scipy.special.gammaln(s + 1.) - jax.scipy.special.gammaln(
+        order + s + 1.)
+
+    return order * (jnp.log(x) - math.log(2)) + logsumexp(fs, -2)
+
+
+def log_I1(orders: int, value, terms=250):
+    r""" Compute first n log modified bessel function of first kind
+    .. math ::
+
+        \log(I_v(z)) = v*\log(z/2) + \log(\sum_{k=0}^\inf \exp\left[2*k*\log(z/2) - \sum_kk^k log(kk)
+        - \lgamma(v + k + 1)\right])
+
+    :param orders: orders of the log modified bessel function.
+    :param value: values to compute modified bessel function for
+    :param terms: truncation of summation
+    :return: 0 to orders modified bessel function
+    """
+    orders = orders + 1
+    if value.ndim == 0:
+        vshape = jnp.shape([1])
+    else:
+        vshape = value.shape
+    value = value.reshape(-1, 1)
+    flat_vshape = _numel(vshape)
+
+    k = jnp.arange(terms)
+    lgammas_all = jax.scipy.special.gammaln(jnp.arange(1., terms + orders + 1.))
+    assert lgammas_all.shape == (orders + terms,)  # lgamma(0) = inf => start from 1
+
+    lvalues = jnp.log(value / 2) * k.reshape(1, -1)
+    assert lvalues.shape == (flat_vshape, terms)
+
+    lfactorials = lgammas_all[:terms]
+    assert lfactorials.shape == (terms,)
+
+    lgammas = lgammas_all.repeat(orders).reshape(orders, -1)
+    assert lgammas.shape == (orders, terms + orders)  # lgamma(0) = inf => start from 1
+
+    indices = k[:orders].reshape(-1, 1) + k.reshape(1, -1)
+    assert indices.shape == (orders, terms)
+
+    seqs = logsumexp(
+        2 * lvalues[None, :, :] - lfactorials[None, None, :] - jnp.take_along_axis(lgammas, indices, axis=1)[:, None,
+                                                               :], -1)
+    assert seqs.shape == (orders, flat_vshape)
+
+    i1s = lvalues[..., :orders].T + seqs
+    assert i1s.shape == (orders, flat_vshape)
+    return i1s.reshape(-1, *vshape)
 
 
 class VonMises(Distribution):
@@ -57,7 +125,7 @@ class VonMises(Distribution):
     @validate_sample
     def log_prob(self, value):
         return -(
-            jnp.log(2 * jnp.pi) + jnp.log(i0e(self.concentration))
+                jnp.log(2 * jnp.pi) + jnp.log(i0e(self.concentration))
         ) + self.concentration * (jnp.cos((value - self.loc) % (2 * jnp.pi)) - 1)
 
     @property
@@ -176,6 +244,196 @@ def _projected_normal_log_prob_2(concentration, value):
     )
 
     return para_part + perp_part
+
+
+class Sine(Distribution):
+    r""" Unimodal distribution of two dependent angles on the 2-torus (S^1 ⨂ S^1) given by
+
+    .. math::
+
+        C^{-1}\exp(\kappa_1\cos(x-\mu_1) + \kappa_2\cos(x_2 -\mu_2) + \rho\sin(x_1 - \mu_1)\sin(x_2 - \mu_2))
+
+    and
+
+    .. math::
+
+        C = (2\pi)^2 \sum_{i=0} {2i \choose i}
+        \left(\frac{\rho^2}{4\kappa_1\kappa_2}\right)^i I_i(\kappa_1)I_i(\kappa_2),
+
+    where I_i(\cdot) is the modified bessel function of first kind, mu's are the locations of the distribution,
+    kappa's are the concentration and rho gives the correlation between angles x_1 and x_2.
+
+    This distribution is helpful for modeling coupled angles such as torsion angles in peptide chains.
+    To infer parameters, use :class:`~pyro.infer.NUTS` or :class:`~pyro.infer.HMC` with priors that
+    avoid parameterizations where the distribution becomes bimodal; see note below.
+
+    .. note:: Sample efficiency drops as
+
+        .. math::
+
+            \frac{\rho}{\kappa_1\kappa_2} \rightarrow 1
+
+        because the distribution becomes increasingly bimodal.
+
+    .. note:: The correlation and weighted_correlation params are mutually exclusive.
+
+    .. note:: In the context of :class:`~pyro.infer.SVI`, this distribution can be used as a likelihood but not for
+        latent variables.
+
+    ** References: **
+      1. Probabilistic model for two dependent circular variables Singh, H., Hnizdo, V., and Demchuck, E. (2002)
+
+    :param jnp.Tensor phi_loc: location of first angle
+    :param jnp.Tensor psi_loc: location of second angle
+    :param jnp.Tensor phi_concentration: concentration of first angle
+    :param jnp.Tensor psi_concentration: concentration of second angle
+    :param jnp.Tensor correlation: correlation between the two angles
+    :param jnp.Tensor weighted_correlation: set correlation to weigthed_corr * sqrt(phi_conc*psi_conc)
+        to avoid bimodality (see note).
+    """
+
+    arg_constraints = {'phi_loc': constraints.real, 'psi_loc': constraints.real,
+                       'phi_concentration': constraints.positive, 'psi_concentration': constraints.positive,
+                       'correlation': constraints.real}
+    support = constraints.independent(constraints.real, 1)
+    max_sample_iter = 1000
+
+    def __init__(self, phi_loc, psi_loc, phi_concentration, psi_concentration, correlation=None,
+                 weighted_correlation=None, validate_args=None):
+
+        assert (correlation is None) != (weighted_correlation is None)
+
+        if weighted_correlation is not None:
+            correlation = weighted_correlation * jnp.sqrt(phi_concentration * psi_concentration) + 1e-8
+
+        self.phi_loc, self.psi_loc, self.phi_concentration, self.psi_concentration, self.correlation = promote_shapes(
+            phi_loc, psi_loc,
+            phi_concentration,
+            psi_concentration,
+            correlation)
+        event_shape = jnp.shape([2])
+        batch_shape = lax.broadcast_shapes(phi_loc.shape, psi_loc.shape, phi_concentration.shape,
+                                           psi_concentration.shape, correlation.shape)
+
+        super().__init__(batch_shape, event_shape, validate_args)
+
+        if self._validate_args and jnp.any(phi_concentration * psi_concentration <= correlation ** 2):
+            warnings.warn(
+                f'{self.__class__.__name__} bimodal due to concentration-correlation relation, '
+                f'sampling will likely fail.', UserWarning)
+
+    @lazy_property
+    def norm_const(self):
+        corr = self.correlation.reshape(1, -1) + 1e-8
+        conc = jnp.stack((self.phi_concentration, self.psi_concentration), axis=-1).reshape(-1, 2)
+        m = jnp.arange(50).reshape(-1, 1)
+        num = lax.lgamma(2 * m + 1.)
+        den = lax.lgamma(m + 1.)
+        lbinoms = num - 2 * den
+
+        fs = lbinoms.reshape(-1, 1) + 2 * m * jnp.log(corr) - m * jnp.log(4 * jnp.prod(conc, axis=-1))
+        fs += log_I1(50, conc, terms=51).sum(-1)
+        mfs = fs.max()
+        norm_const = 2 * jnp.log(jnp.array(2 * pi)) + mfs + logsumexp(fs - mfs, 0)
+        return norm_const.reshape(self.phi_loc.shape)
+
+    def log_prob(self, value):
+        if self._validate_args:
+            self._validate_sample(value)
+        indv = self.phi_concentration * jnp.cos(value[..., 0] - self.phi_loc) + self.psi_concentration * jnp.cos(
+            value[..., 1] - self.psi_loc)
+        corr = self.correlation * jnp.sin(value[..., 0] - self.phi_loc) * jnp.sin(value[..., 1] - self.psi_loc)
+        return indv + corr - self.norm_const
+
+    def sample(self, key, sample_shape=()):
+        """
+        ** References: **
+            1. A New Unified Approach for the Simulation of aWide Class of Directional Distributions
+               John T. Kent, Asaad M. Ganeiber & Kanti V. Mardia (2018)
+        """
+        phi_key, psi_key = random.split(key)
+        sample_shape = jnp.shape(sample_shape)
+
+        corr = self.correlation
+        conc = jnp.stack((self.phi_concentration, self.psi_concentration))
+
+        eig = 0.5 * (conc[0] - corr ** 2 / conc[1])
+        eig = jnp.stack((jnp.zeros_like(eig), eig))
+        eigmin = jnp.where(eig[1] < 0, eig[1], jnp.zeros_like(eig[1], dtype=eig.dtype))
+        eig = eig - eigmin
+        b0 = self._bfind(eig)
+
+        total = sample_shape.numel()
+        missing = total * jnp.ones((self.batch_shape.numel(),), dtype=int)
+        start = jnp.zeros_like(missing)
+        phi = jnp.zeros((2, *missing.shape, total), dtype=corr.dtype)
+
+        max_iter = Sine.max_sample_iter
+
+        # flatten batch_shape
+        conc = conc.reshape(2, -1, 1)
+        eigmin = eigmin.reshape(-1, 1)
+        corr = corr.reshape(-1, 1)
+        eig = eig.reshape(2, -1)
+        b0 = b0.reshape(-1)
+        phi_den = log_I1(0, conc[1]).reshape(-1, 1)
+        lengths = jnp.arange(total).reshape(1, -1)
+
+        while jnp.any(missing > 0) and max_iter:
+            accept_key, acg_key, phi_key = random.split(phi_key, 3)
+            curr_conc = conc[:, missing > 0, :]
+            curr_corr = corr[missing > 0]
+            curr_eig = eig[:, missing > 0]
+            curr_b0 = b0[missing > 0]
+            min_left = missing[missing > 0].min()
+
+            x = random.normal(acg_key, (min_left,), 0., jnp.sqrt(1 + 2 * curr_eig / curr_b0)).reshape((2, -1, min_left))
+            x /= jnp.linalg.norm(x, axis=0)[None, ...]  # Angular Central Gaussian distribution
+
+            lf = curr_conc[0] * (x[0] - 1) + eigmin[missing > 0] + log_I1(0, jnp.sqrt(
+                curr_conc[1] ** 2 + (curr_corr * x[1]) ** 2)).squeeze(0) - phi_den[missing > 0]
+            assert lf.shape == ((missing > 0).sum(), missing[missing > 0].min())
+
+            lg_inv = 1. - curr_b0.reshape(-1, 1) / 2 + jnp.log(
+                curr_b0.reshape(-1, 1) / 2 + (curr_eig.reshape(2, -1, 1) * x ** 2).sum(0))
+            assert lg_inv.shape == lf.shape
+
+            accepted = random.uniform(accept_key, lf.shape, 0., jnp.ones(())) < (lf + lg_inv).exp()
+
+            phi_mask = jnp.zeros((*missing.shape, total), dtype=int, )
+            phi_mask[missing > 0] += jnp.logical_and(lengths < (start[missing > 0] + accepted.sum(-1)).reshape(-1, 1),
+                                                     lengths >= start[missing > 0].reshape(-1, 1))
+
+            phi[:, phi_mask] += x[:, accepted]
+
+            start[missing > 0] += jnp.sum(accepted, -1)
+            missing[missing > 0] -= jnp.sum(accepted, -1)
+            max_iter -= 1
+
+        if max_iter == 0 or jnp.any(missing > 0):
+            raise ValueError("maximum number of iterations exceeded; "
+                             "try increasing `SineBivariateVonMises.max_sample_iter`")
+
+        phi = lax.atan2(phi[0], phi[1])
+
+        alpha = jnp.sqrt(conc[1] ** 2 + (corr * jnp.sin(phi)) ** 2)
+        beta = lax.atan(corr / conc[1] * jnp.sin(phi))
+
+        psi = VonMises(beta, alpha).sample()
+
+        phi_psi = jnp.stack(((phi + self.phi_loc.reshape((-1, 1)) + pi) % (2 * pi) - pi,
+                             (psi + self.psi_loc.reshape((-1, 1)) + pi) % (2 * pi) - pi), axis=-1).permute(1, 0, 2)
+        return phi_psi.reshape(*sample_shape, *self.batch_shape, *self.event_shape)
+
+    @property
+    def mean(self):
+        return jnp.stack((self.phi_loc, self.psi_loc), axis=-1)
+
+    def _bfind(self, eig):
+        b = eig.shape[0] / 2 * jnp.ones(self.batch_shape, dtype=eig.dtype)
+        g1 = jnp.sum(1 / (b + 2 * eig) ** 2, axis=0)
+        g2 = jnp.sum(-2 / (b + 2 * eig) ** 3, axis=0)
+        return jnp.where(jnp.linalg.norm(eig, 0) != 0, b - g1 / g2, b)
 
 
 def _projected_normal_log_prob_3(concentration, value):
