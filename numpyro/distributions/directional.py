@@ -7,7 +7,6 @@ import operator
 import warnings
 from math import pi
 
-import jax
 import jax.numpy as jnp
 import jax.random as random
 from jax import lax
@@ -23,22 +22,9 @@ from numpyro.distributions.util import (
     von_mises_centered, lazy_property,
 )
 
-
+from jax.experimental import loops
 def _numel(shape):
     return functools.reduce(operator.mul, shape, 1)
-
-
-def log_im(order, x):  ## x is a parameter, like k1 or k2
-    # Based on '_log_modified_bessel_fn'
-    # Tanabe, A., Fukumizu, K., Oba, S., Takenouchi, T., & Ishii, S. (2007).
-    # Parameter estimation for von Mises–Fisher distributions. Computational Statistics, 22(1), 145-157.
-    """ terms to sum over, 10 by 'shape of x' and sums over the first dimension """
-    """ vectorized logarithmic Im """
-    s = jnp.arange(0, 251).reshape(251, 1)
-    fs = 2 * s * (jnp.log(x) - math.log(2)) - jax.scipy.special.gammaln(s + 1.) - jax.scipy.special.gammaln(
-        order + s + 1.)
-
-    return order * (jnp.log(x) - math.log(2)) + logsumexp(fs, -2)
 
 
 def log_I1(orders: int, value, terms=250):
@@ -62,16 +48,16 @@ def log_I1(orders: int, value, terms=250):
     flat_vshape = _numel(vshape)
 
     k = jnp.arange(terms)
-    lgammas_all = jax.scipy.special.gammaln(jnp.arange(1., terms + orders + 1.))
+    lgammas_all = lax.lgamma(jnp.arange(1., terms + orders + 1))
     assert lgammas_all.shape == (orders + terms,)  # lgamma(0) = inf => start from 1
 
-    lvalues = jnp.log(value / 2) * k.reshape(1, -1)
+    lvalues = lax.log(value / 2) * k.reshape(1, -1)
     assert lvalues.shape == (flat_vshape, terms)
 
     lfactorials = lgammas_all[:terms]
     assert lfactorials.shape == (terms,)
 
-    lgammas = lgammas_all.repeat(orders).reshape(orders, -1)
+    lgammas = lgammas_all.tile(orders).reshape((orders, -1))
     assert lgammas.shape == (orders, terms + orders)  # lgamma(0) = inf => start from 1
 
     indices = k[:orders].reshape(-1, 1) + k.reshape(1, -1)
@@ -332,7 +318,7 @@ class Sine(Distribution):
         lbinoms = num - 2 * den
 
         fs = lbinoms.reshape(-1, 1) + 2 * m * jnp.log(corr) - m * jnp.log(4 * jnp.prod(conc, axis=-1))
-        fs += log_I1(50, conc, terms=51).sum(-1)
+        fs += log_I1(49, conc, terms=51).sum(-1)
         mfs = fs.max()
         norm_const = 2 * jnp.log(jnp.array(2 * pi)) + mfs + logsumexp(fs - mfs, 0)
         return norm_const.reshape(self.phi_loc.shape)

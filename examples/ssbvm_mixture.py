@@ -77,7 +77,7 @@ def main(num_mix_comp=2, num_samples=200, aas=('S', 'P', 'G'),
          show_viz=False, use_cuda=False, report_waic=False, capture_std=False, rerun_inference=False, report_bf=False):
     chain_file = Path(__file__).parent / f'ssbvm_bmixture_comp{num_mix_comp}_steps{num_samples}.pkl'
 
-    data = fetch_aa_dihedrals()
+    data = fetch_aa_dihedrals(subsample_to=100)
     posterior_samples = {aa: {'ss': run_hmc(ss_model, data[aa], num_mix_comp, num_samples)} for aa in aas}
 
 
