@@ -36,13 +36,6 @@ def ss_model(data, num_mix_comp=2):
         psi_conc = numpyro.sample('psi_conc', Beta(halpha_psi, beta_prec_psi - halpha_psi))
         corr_scale = numpyro.sample('corr_scale', Beta(2., 5.))
 
-        # SS prior
-        skew_phi = numpyro.sample('skew_phi', Uniform(-1., 1.))
-        psi_bound = 1 - jnp.abs(skew_phi)
-        skew_psi = numpyro.sample('skew_psi', Uniform(-1., 1.))
-        skewness = jnp.stack((skew_phi, psi_bound * skew_psi), axis=-1)
-        assert skewness.shape == (num_mix_comp, 2)
-
     with numpyro.plate('obs_plate', len(data), dim=-1):
         assign = numpyro.sample('mix_comp', Categorical(mix_weights), infer={"enumerate": "parallel"})
         sine = Sine(phi_loc=phi_loc[assign], psi_loc=psi_loc[assign],
@@ -73,12 +66,13 @@ def fetch_aa_dihedrals(split='train', subsample_to=1000_000):
     return data
 
 
-def main(num_mix_comp=10, num_samples=250, aas=('S', 'P', 'G'),
+def main(num_mix_comp=2, num_samples=200, aas=('S', 'P', 'G'),
          show_viz=False, use_cuda=False, report_waic=False, capture_std=False, rerun_inference=False, report_bf=False):
     chain_file = Path(__file__).parent / f'ssbvm_bmixture_comp{num_mix_comp}_steps{num_samples}.pkl'
 
-    data = fetch_aa_dihedrals(subsample_to=5_000)
-    posterior_samples = {aa: {'ss': run_hmc(ss_model, data[aa], num_mix_comp, num_samples)} for aa in aas}
+    data = fetch_aa_dihedrals(subsample_to=50_000)
+    pos = {aa: {'ss': run_hmc(ss_model, data[aa], num_mix_comp, num_samples)} for aa in aas}
+
 
 
 if __name__ == '__main__':
