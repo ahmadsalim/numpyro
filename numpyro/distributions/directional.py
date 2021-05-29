@@ -1,6 +1,7 @@
 # Copyright Contributors to the Pyro project.
 # SPDX-License-Identifier: Apache-2.0
 
+import numpy as np
 import functools
 import math
 import operator
@@ -233,6 +234,7 @@ def _projected_normal_log_prob_2(concentration, value):
 
     return para_part + perp_part
 
+
 class SineSkewed(Distribution):
     """The Sine Skewed distribution [1] is a distribution for breaking pointwise-symmetry on a base-distribution over
     the d-dimensional torus defined as ⨂^d S^1 where S^1 is the circle. So for example the 0-torus is a point, the
@@ -270,12 +272,12 @@ class SineSkewed(Distribution):
     support = constraints.independent(constraints.real, 1)
 
     def __init__(self, base_dist: Distribution, skewness, validate_args=None):
-        if (skewness.abs().sum(-1) > 1.).any():
+        if jnp.any(jnp.abs(skewness).sum(-1) > 1.):
             warnings.warn("Total skewness weight shouldn't exceed one.", UserWarning)
 
-        batch_shape = broadcast_shapes(base_dist.batch_shape, skewness.shape[:-1])
+        batch_shape = jnp.broadcast_shapes(base_dist.batch_shape, skewness.shape[:-1])
         event_shape = skewness.shape[-1:]
-        self.skewness = skewness.broadcast_to(batch_shape + event_shape)
+        self.skewness = jnp.broadcast_to(skewness, batch_shape + event_shape)
         self.base_dist = base_dist.expand(batch_shape)
         super().__init__(batch_shape, event_shape, validate_args=validate_args)
 
@@ -285,15 +287,15 @@ class SineSkewed(Distribution):
 
     def __repr__(self):
         args_string = ', '.join(['{}: {}'.format(p, getattr(self, p)
-                                if getattr(self, p).numel() == 1
-                                else getattr(self, p).size()) for p in self.arg_constraints.keys()])
+        if getattr(self, p).numel() == 1
+        else getattr(self, p).size()) for p in self.arg_constraints.keys()])
         return self.__class__.__name__ + '(' + f'base_density: {str(self.base_dist)}, ' + args_string + ')'
 
     def sample(self, key, sample_shape=()):
         base_key, skew_key = random.split(key)
         bd = self.base_dist
         ys = bd.sample(base_key, sample_shape)
-        u = random.uniform(skew_key,sample_shape + self.batch_shape, 0., 1., )
+        u = random.uniform(skew_key, sample_shape + self.batch_shape, 0., 1., )
 
         # Section 2.3 step 3 in [1]
         mask = u <= .5 + .5 * (self.skewness * jnp.sin((ys - bd.mean) % (2 * pi))).sum(-1)
@@ -308,6 +310,7 @@ class SineSkewed(Distribution):
         # Eq. 2.1 in [1]
         skew_prob = jnp.log(1 + (self.skewness * jnp.sin((value - self.base_dist.mean) % (2 * pi))).sum(-1))
         return self.base_dist.log_prob(value) + skew_prob
+
 
 PhiMarginalState = namedtuple("PhiMarginalState",
                               ["conc", "eigmin", "corr", "eig", "b0", "phi_den", "lengths", "phi", "rng_key", "done"])
@@ -430,8 +433,8 @@ class Sine(Distribution):
         eig = eig - eigmin
         b0 = self._bfind(eig)
 
-        total = sample_shape.numel()
-        missing = total * jnp.ones((self.batch_shape.numel(),), dtype=int)
+        total = _numel(sample_shape)
+        missing = total * np.ones((_numel(self.batch_shape),), dtype=int)
         start = jnp.zeros_like(missing)
         phi = jnp.zeros((2, *missing.shape, total), dtype=corr.dtype)
 
@@ -446,19 +449,29 @@ class Sine(Distribution):
 
         def update_fn(i, curr):
             conc, eigmin, corr, eig, b0, phi_den, lengths, phi, key, done = curr
-            if done:
-                return curr
+            # if done:
+            #     return curr
 
             phi_key, key = random.split(key)
 
             accept_key, acg_key, phi_key = random.split(phi_key, 3)
-            curr_conc = conc[:, missing > 0, :]
-            curr_corr = corr[missing > 0]
-            curr_eig = eig[:, missing > 0]
-            curr_b0 = b0[missing > 0]
-            min_left = missing[missing > 0].min()
+            # curr_conc = conc[:, missing > 0, :]
+            missing_mask = missing > 0
+            curr_conc = jnp.take_along_axis(conc, missing_mask.reshape(1, -1, 1), 1)
 
-            x = random.normal(acg_key, (min_left,), 0., jnp.sqrt(1 + 2 * curr_eig / curr_b0)).reshape((2, -1, min_left))
+            # curr_corr = corr[missing > 0]
+            curr_corr = jnp.take(corr, missing_mask)
+            # curr_eig = eig[:, missing > 0]
+            curr_eig = jnp.take(eig, missing_mask)
+            # curr_b0 = b0[missing > 0]
+            curr_b0 = jnp.take(b0, missing_mask)
+            # min_left = missing[missing > 0].min()
+            min_left = missing[missing_mask].min()
+
+            # FIXME!!
+            # x = random.normal(acg_key, (min_left,), 0., jnp.sqrt(1 + 2 * curr_eig / curr_b0)).reshape((2, -1, min_left))
+            x = random.normal(acg_key, (min_left,))
+
             x /= jnp.linalg.norm(x, axis=0)[None, ...]  # Angular Central Gaussian distribution
 
             lf = curr_conc[0] * (x[0] - 1) + eigmin[missing > 0] + log_I1(0, jnp.sqrt(
@@ -482,7 +495,7 @@ class Sine(Distribution):
 
             return PhiMarginalState(conc, eigmin, corr, eig, b0, phi_den, lengths, phi, key, missing.sum() == 0)
 
-        phi_marg_state = fori_loop(0, Sine.max_sample_iter, update_fn, conc,
+        phi_marg_state = fori_loop(0, Sine.max_sample_iter, update_fn,
                                    PhiMarginalState(conc, eigmin, corr, eig, b0, phi_den, lengths, phi, phi_key, False))
 
         if jnp.any(phi_marg_state.missing > 0):
@@ -508,7 +521,7 @@ class Sine(Distribution):
         b = eig.shape[0] / 2 * jnp.ones(self.batch_shape, dtype=eig.dtype)
         g1 = jnp.sum(1 / (b + 2 * eig) ** 2, axis=0)
         g2 = jnp.sum(-2 / (b + 2 * eig) ** 3, axis=0)
-        return jnp.where(jnp.linalg.norm(eig, 0) != 0, b - g1 / g2, b)
+        return jnp.where(jnp.linalg.norm(eig, axis=0) != 0, b - g1 / g2, b)
 
 
 def _projected_normal_log_prob_3(concentration, value):

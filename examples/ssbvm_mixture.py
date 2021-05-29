@@ -1,4 +1,5 @@
 import pickle
+import sys
 from math import pi
 from pathlib import Path
 
@@ -66,13 +67,22 @@ def fetch_aa_dihedrals(split='train', subsample_to=1000_000):
     return data
 
 
-def main(num_mix_comp=2, num_samples=200, aas=('S', 'P', 'G'),
-         show_viz=False, use_cuda=False, report_waic=False, capture_std=False, rerun_inference=False, report_bf=False):
+def main(num_mix_comp=10, num_samples=200, aas=('S'), capture_std=False, rerun_inference=False):
+    if capture_std:
+        sys.stdout = open(f'ssbvm_bmixture_comp{num_mix_comp}_steps{num_samples}.out', 'w')
     chain_file = Path(__file__).parent / f'ssbvm_bmixture_comp{num_mix_comp}_steps{num_samples}.pkl'
 
-    data = fetch_aa_dihedrals(subsample_to=50_000)
-    pos = {aa: {'ss': run_hmc(ss_model, data[aa], num_mix_comp, num_samples)} for aa in aas}
+    if rerun_inference or not chain_file.exists():
+        data = fetch_aa_dihedrals(subsample_to=50_000)
+        posterior_samples = {aa: {'sine': run_hmc(ss_model, data[aa], num_mix_comp, num_samples)} for aa in aas}
 
+    if rerun_inference or not chain_file.exists():
+        pickle.dump(posterior_samples, chain_file.open('wb'))
+    else:
+        posterior_samples = pickle.load(chain_file.open('rb'))
+
+    if capture_std:
+        sys.stdout.close()
 
 
 if __name__ == '__main__':
