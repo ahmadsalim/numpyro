@@ -1,26 +1,14 @@
 # Copyright Contributors to the Pyro project.
 # SPDX-License-Identifier: Apache-2.0
 
-from collections import defaultdict, namedtuple
 import copy
-from functools import partial
 import warnings
+from collections import defaultdict, namedtuple
+from functools import partial
 
-import numpy as np
-
-from jax import (
-    device_put,
-    grad,
-    hessian,
-    jacfwd,
-    jacobian,
-    lax,
-    ops,
-    random,
-    value_and_grad,
-)
-from jax.flatten_util import ravel_pytree
 import jax.numpy as jnp
+import numpy as np
+from jax import device_put, jacfwd, jacobian, grad, hessian, lax, ops, random, value_and_grad, vmap
 from jax.scipy.special import expit
 
 import numpyro
@@ -28,8 +16,8 @@ from numpyro.distributions.transforms import biject_to
 from numpyro.handlers import block, condition, seed, substitute, trace
 from numpyro.infer.hmc import HMC
 from numpyro.infer.mcmc import MCMCKernel
-from numpyro.infer.util import _unconstrain_reparam
-from numpyro.util import cond, fori_loop, identity
+from numpyro.infer.util import _unconstrain_reparam, _predictive, log_density
+from numpyro.util import cond, fori_loop, identity, ravel_pytree
 
 HMCGibbsState = namedtuple("HMCGibbsState", "z, hmc_state, rng_key")
 """
@@ -100,7 +88,7 @@ class HMCGibbs(MCMCKernel):
         if not callable(gibbs_fn):
             raise ValueError("gibbs_fn must be a callable")
         assert (
-            inner_kernel.model is not None
+                inner_kernel.model is not None
         ), "HMCGibbs does not support models specified via a potential function."
 
         self.inner_kernel = copy.copy(inner_kernel)
@@ -190,7 +178,7 @@ class HMCGibbs(MCMCKernel):
 
 
 def _discrete_gibbs_proposal_body_fn(
-    z_init_flat, unravel_fn, pe_init, potential_fn, idx, i, val
+        z_init_flat, unravel_fn, pe_init, potential_fn, idx, i, val
 ):
     rng_key, z, pe, log_weight_sum = val
     rng_key, rng_transition = random.split(rng_key)
@@ -240,7 +228,7 @@ def _discrete_gibbs_proposal(rng_key, z_discrete, pe, potential_fn, idx, support
 
 
 def _discrete_modified_gibbs_proposal(
-    rng_key, z_discrete, pe, potential_fn, idx, support_size, stay_prob=0.0
+        rng_key, z_discrete, pe, potential_fn, idx, support_size, stay_prob=0.0
 ):
     assert isinstance(stay_prob, float) and stay_prob >= 0.0 and stay_prob < 1
     z_discrete_flat, unravel_fn = ravel_pytree(z_discrete)
@@ -287,7 +275,7 @@ def _discrete_rw_proposal(rng_key, z_discrete, pe, potential_fn, idx, support_si
 
 
 def _discrete_modified_rw_proposal(
-    rng_key, z_discrete, pe, potential_fn, idx, support_size, stay_prob=0.0
+        rng_key, z_discrete, pe, potential_fn, idx, support_size, stay_prob=0.0
 ):
     assert isinstance(stay_prob, float) and stay_prob >= 0.0 and stay_prob < 1
     rng_key, rng_proposal, rng_stay = random.split(rng_key, 3)
@@ -427,16 +415,16 @@ class DiscreteHMCGibbs(HMCGibbs):
             )
             for name, site in self._prototype_trace.items()
             if site["type"] == "sample"
-            and site["fn"].has_enumerate_support
-            and not site["is_observed"]
+               and site["fn"].has_enumerate_support
+               and not site["is_observed"]
         }
         self._gibbs_sites = [
             name
             for name, site in self._prototype_trace.items()
             if site["type"] == "sample"
-            and site["fn"].has_enumerate_support
-            and not site["is_observed"]
-            and site["infer"].get("enumerate", "") != "parallel"
+               and site["fn"].has_enumerate_support
+               and not site["is_observed"]
+               and site["infer"].get("enumerate", "") != "parallel"
         ]
         assert (
             self._gibbs_sites
@@ -528,6 +516,7 @@ TaylorProxyState = namedtuple(
     "ref_subsample_log_liks, "
     "ref_subsample_log_lik_grads, ref_subsample_log_lik_hessians",
 )
+VariationalProxyState = namedtuple('VariationalProxyState', 'subsample_weights')
 
 
 def _wrap_gibbs_state(model, *args, **kwargs):
@@ -596,7 +585,6 @@ class HMCECS(HMCGibbs):
 
     def __init__(self, inner_kernel, *, num_blocks=1, proxy=None):
         super().__init__(inner_kernel, identity, None)
-
         self.inner_kernel._model = partial(_wrap_gibbs_state, self.inner_kernel._model)
         self._num_blocks = num_blocks
         self._proxy = proxy
@@ -685,7 +673,7 @@ class HMCECS(HMCGibbs):
             transition,
             (z_gibbs_new, gibbs_state_new, pe_new),
             lambda vals: vals
-            + (grad_(partial(potential_fn, vals[0], vals[1]))(state.hmc_state.z),),
+                         + (grad_(partial(potential_fn, vals[0], vals[1]))(state.hmc_state.z),),
             (z_gibbs, state.gibbs_state, pe, state.hmc_state.z_grad),
             identity,
         )
@@ -719,8 +707,8 @@ def perturbed_method(subsample_plate_sizes, proxy_fn):
         )
 
         for (
-            name,
-            subsample_log_lik,
+                name,
+                subsample_log_lik,
         ) in subsample_log_liks.items():  # loop over all subsample sites
             n, m = subsample_plate_sizes[name]
 
@@ -747,12 +735,12 @@ def taylor_proxy(reference_params):
     """
 
     def construct_proxy_fn(
-        prototype_trace,
-        subsample_plate_sizes,
-        model,
-        model_args,
-        model_kwargs,
-        num_blocks=1,
+            prototype_trace,
+            subsample_plate_sizes,
+            model,
+            model_args,
+            model_kwargs,
+            num_blocks=1,
     ):
         ref_params = {
             name: biject_to(prototype_trace[name]["fn"].support).inv(value)
@@ -774,7 +762,7 @@ def taylor_proxy(reference_params):
                     for name, value in params.items()
                 }
                 with block(), trace() as tr, substitute(
-                    data=subsample_indices
+                        data=subsample_indices
                 ), substitute(data=params):
                     model(*model_args, **model_kwargs)
 
@@ -831,17 +819,17 @@ def taylor_proxy(reference_params):
                 ref_params_flat, new_idxs
             )
             for stat, new_block_values, last_values in zip(
-                ["log_liks", "grads", "hessians"],
-                [
-                    ref_subsample_log_liks,
-                    ref_subsample_log_lik_grads,
-                    ref_subsample_log_lik_hessians,
-                ],
-                [
-                    gibbs_state.ref_subsample_log_liks,
-                    gibbs_state.ref_subsample_log_lik_grads,
-                    gibbs_state.ref_subsample_log_lik_hessians,
-                ],
+                    ["log_liks", "grads", "hessians"],
+                    [
+                        ref_subsample_log_liks,
+                        ref_subsample_log_lik_grads,
+                        ref_subsample_log_lik_hessians,
+                    ],
+                    [
+                        gibbs_state.ref_subsample_log_liks,
+                        gibbs_state.ref_subsample_log_lik_grads,
+                        gibbs_state.ref_subsample_log_lik_hessians,
+                    ],
             ):
                 for name, subsample_idx in gibbs_sites.items():
                     size, subsample_size = subsample_plate_sizes[name]
@@ -871,23 +859,23 @@ def taylor_proxy(reference_params):
             proxy_subsample = defaultdict(float)
             for name in subsample_lik_sites:
                 proxy_subsample[name] = (
-                    ref_subsample_log_liks[name]
-                    + jnp.dot(ref_subsample_log_lik_grads[name], params_diff)
-                    + 0.5
-                    * jnp.dot(
-                        jnp.dot(ref_subsample_log_lik_hessians[name], params_diff),
-                        params_diff,
-                    )
+                        ref_subsample_log_liks[name]
+                        + jnp.dot(ref_subsample_log_lik_grads[name], params_diff)
+                        + 0.5
+                        * jnp.dot(
+                    jnp.dot(ref_subsample_log_lik_hessians[name], params_diff),
+                    params_diff,
+                )
                 )
 
                 proxy_sum[name] = (
-                    ref_log_likelihoods_sum[name]
-                    + jnp.dot(ref_log_likelihood_grads_sum[name], params_diff)
-                    + 0.5
-                    * jnp.dot(
-                        jnp.dot(ref_log_likelihood_hessians_sum[name], params_diff),
-                        params_diff,
-                    )
+                        ref_log_likelihoods_sum[name]
+                        + jnp.dot(ref_log_likelihood_grads_sum[name], params_diff)
+                        + 0.5
+                        * jnp.dot(
+                    jnp.dot(ref_log_likelihood_hessians_sum[name], params_diff),
+                    params_diff,
+                )
                 )
             return proxy_sum, proxy_subsample
 
@@ -899,6 +887,113 @@ def taylor_proxy(reference_params):
 def _sum_all_except_at_dim(x, dim):
     x = x.reshape((-1,) + x.shape[dim:]).sum(0)
     return x.reshape(x.shape[:1] + (-1,)).sum(-1)
+
+
+def variational_proxy(guide, guide_params, num_particles=10):
+    def construct_proxy_fn(rng_key, model, model_args, model_kwargs, num_blocks=1):
+        # TODO: assert that there is no auxiliary latent variable in the guide
+        model_kwargs = model_kwargs.copy()
+        prototype_trace = trace(seed(model, rng_key)).get_trace(*model_args, **model_kwargs)
+        subsample_plate_sizes = {
+            name: site["args"]
+            for name, site in prototype_trace.items()
+            if site["type"] == "plate" and site["args"][0] > site["args"][1]  # i.e. size > subsample_size
+        }
+
+        pos_key, guide_key, rng_key = random.split(rng_key, 3)
+        guide_with_params = substitute(guide, guide_params)
+
+        # factor out?
+        def log_likelihood(params, subsample_indices=None):
+            params_flat, unravel_fn = ravel_pytree(params)
+            if subsample_indices is None:
+                subsample_indices = {k: jnp.arange(v[0]) for k, v in subsample_plate_sizes.items()}
+            params = unravel_fn(params_flat)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                with block(), trace() as tr, substitute(data=subsample_indices), \
+                        substitute(substitute_fn=partial(_unconstrain_reparam, params)):
+                    model(*model_args, **model_kwargs)
+
+            log_lik = defaultdict(float)
+            for site in tr.values():
+                if site["type"] == "sample" and site["is_observed"]:
+                    for frame in site["cond_indep_stack"]:
+                        if frame.name in subsample_plate_sizes:
+                            log_lik[frame.name] += _sum_all_except_at_dim(
+                                site["fn"].log_prob(site["value"]), frame.dim)
+            return log_lik
+
+        def log_variational(params):
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', category=UserWarning)
+                dummy_subsample = {k: jnp.array([], dtype=jnp.int32) for k in subsample_plate_sizes}
+                with block(), substitute(data=dummy_subsample):
+                    posterior_prob, _ = log_density(guide_with_params, model_args, model_kwargs, params)
+            return posterior_prob
+
+        def log_prior(params):
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', category=UserWarning)
+                dummy_subsample = {k: jnp.array([], dtype=jnp.int32) for k in subsample_plate_sizes}
+                with block(), substitute(data=dummy_subsample):
+                    prior_prob, _ = log_density(model, model_kwargs, params)
+            return prior_prob
+
+        return_sites = [k for k, site in prototype_trace.items()
+                        if site["type"] == "sample" and not site["is_observed"]]
+        posterior_samples = _predictive(pos_key, guide_with_params, {}, (num_particles,), return_sites=return_sites,
+                                        parallel=True, model_args=model_args, model_kwargs=model_kwargs)
+        log_likelihood_ref = vmap(log_likelihood)(posterior_samples)
+
+        log_prior_prob = vmap(log_prior)(posterior_samples)
+        log_var_prob = vmap(log_variational)(posterior_samples)
+
+        weights = {name: jnp.exp(log_var_prob) * log_like / num_particles for name, log_like in
+                   log_likelihood_ref.items()}
+
+        # ELBO = exp(log(Q(z))) * (log(L(z) - log(pi(z)) - log(Q(z)))).sum()
+        elbo = {name: jnp.exp(log_var_prob)/num_particles * (log_like.sum(-1) + log_prior_prob - log_var_prob)
+                for name, log_like in log_likelihood_ref.items()}
+
+        def gibbs_init(rng_key, gibbs_sites):
+            return VariationalProxyState(
+                {name: weights[name][subsample_idx] for name, subsample_idx in gibbs_sites.items()})
+
+        def gibbs_update(rng_key, gibbs_sites, gibbs_state):
+            u_new, pads, new_idxs, starts = _block_update_proxy(num_blocks, rng_key, gibbs_sites, subsample_plate_sizes)
+
+            new_subsample_weights = {}
+            for name, subsample_weights in gibbs_state.subsample_weights.items():
+                size, subsample_size = subsample_plate_sizes[name]  # TODO: fix duplication!
+                pad, new_idx, start = pads[name], new_idxs[name], starts[name]
+                new_value = jnp.pad(subsample_weights,
+                                    [(0, pad)] + [(0, 0)] * (jnp.ndim(subsample_weights) - 1))
+                new_value = lax.dynamic_update_slice_in_dim(new_value, weights[name][new_idx], start, 0)
+                new_subsample_weights[name] = new_value[:subsample_size]
+            gibbs_state = VariationalProxyState(new_subsample_weights)
+            return u_new, gibbs_state
+
+        def proxy_fn(params, subsample_lik_sites, gibbs_state):
+
+            proxy_sum = {}
+            proxy_subsample = {}
+            # TODO: convert params to constrained space
+            log_prior_prob = log_prior(params)
+            log_posterior_prob = log_variational(params)
+
+            for name in subsample_lik_sites:
+                # Q(z) = L(z)pi(z)/p(x) => L(z) = p(x)/Q(z)pi(z) >= exp(elbo)/Q(z)pi(z) =>
+                # log(L(z)) = elbo - Q(z) - pi(z)
+                proxy_sum[name] = elbo[name] - log_posterior_prob - log_prior_prob
+
+                # w_i = exp(E_{z~Q}[l(w_i, z)]) / sum_j^n exp(E_{z~Q}[l(w_j, z)])
+                proxy_subsample[name] = gibbs_state.subsample_weights[name] * proxy_sum[name]
+            return proxy_sum, proxy_subsample
+
+        return proxy_fn, gibbs_init, gibbs_update
+
+    return construct_proxy_fn
 
 
 class estimate_likelihood(numpyro.primitives.Messenger):
@@ -919,9 +1014,9 @@ class estimate_likelihood(numpyro.primitives.Messenger):
             # the potential_fn in HMC makes the PYRO_STACK nested like trace(...); so we can extract the
             # unconstrained_params from the _unconstrain_reparam substitute_fn
             if (
-                isinstance(handler, substitute)
-                and isinstance(handler.substitute_fn, partial)
-                and handler.substitute_fn.func is _unconstrain_reparam
+                    isinstance(handler, substitute)
+                    and isinstance(handler.substitute_fn, partial)
+                    and handler.substitute_fn.func is _unconstrain_reparam
             ):
                 self.params = handler.substitute_fn.args[0]
                 break
