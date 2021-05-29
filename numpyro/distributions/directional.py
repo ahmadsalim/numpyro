@@ -469,8 +469,7 @@ class Sine(Distribution):
             min_left = missing[missing_mask].min()
 
             # FIXME!!
-            # x = random.normal(acg_key, (min_left,), 0., jnp.sqrt(1 + 2 * curr_eig / curr_b0)).reshape((2, -1, min_left))
-            x = random.normal(acg_key, (min_left,))
+            x = random.normal(acg_key, (min_left,), 0., jnp.sqrt(1 + 2 * curr_eig / curr_b0)).reshape((2, -1, min_left))
 
             x /= jnp.linalg.norm(x, axis=0)[None, ...]  # Angular Central Gaussian distribution
 
