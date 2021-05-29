@@ -5,6 +5,7 @@ import functools
 import math
 import operator
 import warnings
+from collections import namedtuple
 from math import pi
 
 import jax.numpy as jnp
@@ -21,8 +22,9 @@ from numpyro.distributions.util import (
     validate_sample,
     von_mises_centered, lazy_property,
 )
+from numpyro.util import fori_loop
 
-from jax.experimental import loops
+
 def _numel(shape):
     return functools.reduce(operator.mul, shape, 1)
 
@@ -232,6 +234,10 @@ def _projected_normal_log_prob_2(concentration, value):
     return para_part + perp_part
 
 
+PhiMarginalState = namedtuple("PhiMarginalState",
+                              ["conc", "eigmin", "corr", "eig", "b0", "phi_den", "lengths", "phi", "rng_key", "done"])
+
+
 class Sine(Distribution):
     r""" Unimodal distribution of two dependent angles on the 2-torus (S^1 ⨂ S^1) given by
 
@@ -354,8 +360,6 @@ class Sine(Distribution):
         start = jnp.zeros_like(missing)
         phi = jnp.zeros((2, *missing.shape, total), dtype=corr.dtype)
 
-        max_iter = Sine.max_sample_iter
-
         # flatten batch_shape
         conc = conc.reshape(2, -1, 1)
         eigmin = eigmin.reshape(-1, 1)
@@ -365,7 +369,13 @@ class Sine(Distribution):
         phi_den = log_I1(0, conc[1]).reshape(-1, 1)
         lengths = jnp.arange(total).reshape(1, -1)
 
-        while jnp.any(missing > 0) and max_iter:
+        def update_fn(i, curr):
+            conc, eigmin, corr, eig, b0, phi_den, lengths, phi, key, done = curr
+            if done:
+                return curr
+
+            phi_key, key = random.split(key)
+
             accept_key, acg_key, phi_key = random.split(phi_key, 3)
             curr_conc = conc[:, missing > 0, :]
             curr_corr = corr[missing > 0]
@@ -394,13 +404,17 @@ class Sine(Distribution):
 
             start[missing > 0] += jnp.sum(accepted, -1)
             missing[missing > 0] -= jnp.sum(accepted, -1)
-            max_iter -= 1
 
-        if max_iter == 0 or jnp.any(missing > 0):
+            return PhiMarginalState(conc, eigmin, corr, eig, b0, phi_den, lengths, phi, key, missing.sum() == 0)
+
+        phi_marg_state = fori_loop(0, Sine.max_sample_iter, update_fn, conc,
+                                   PhiMarginalState(conc, eigmin, corr, eig, b0, phi_den, lengths, phi, phi_key, False))
+
+        if jnp.any(phi_marg_state.missing > 0):
             raise ValueError("maximum number of iterations exceeded; "
                              "try increasing `SineBivariateVonMises.max_sample_iter`")
 
-        phi = lax.atan2(phi[0], phi[1])
+        phi = lax.atan2(phi_marg_state.phi[0], phi_marg_state.phi[1])
 
         alpha = jnp.sqrt(conc[1] ** 2 + (corr * jnp.sin(phi)) ** 2)
         beta = lax.atan(corr / conc[1] * jnp.sin(phi))
