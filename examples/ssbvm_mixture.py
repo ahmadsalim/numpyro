@@ -8,6 +8,7 @@ from jax import numpy as jnp
 from jax import random
 
 import numpyro
+from examples.ramadata_viz import kde_ramachandran_plot
 from numpyro.contrib.funsor import config_enumerate
 from numpyro.distributions import Dirichlet, Gamma, Uniform, VonMises, Beta, Categorical, Sine, SineSkewed
 from numpyro.infer import NUTS, init_to_median, MCMC
@@ -23,10 +24,10 @@ def sine_model(data, num_mix_comp=2):
     # Hprior BvM
     # Bayesian Inference and Decision Theory by Kathryn Blackmond Laskey
     beta_mean_phi = numpyro.sample('beta_mean_phi', Uniform(0., 1.))
-    beta_prec_phi = numpyro.sample('beta_prec_phi', Gamma(1., 1 / 20.))  # shape, rate
+    beta_prec_phi = numpyro.sample('beta_prec_phi', Gamma(1., 1 / 15.))  # shape, rate
     halpha_phi = beta_mean_phi * beta_prec_phi
     beta_mean_psi = numpyro.sample('beta_mean_psi', Uniform(0, 1.))
-    beta_prec_psi = numpyro.sample('beta_prec_psi', Gamma(1., 1 / 20.))  # shape, rate
+    beta_prec_psi = numpyro.sample('beta_prec_psi', Gamma(1., 1 / 15.))  # shape, rate
     halpha_psi = beta_mean_psi * beta_prec_psi
 
     with numpyro.plate('mixture', num_mix_comp):
@@ -54,10 +55,10 @@ def ss_model(data, num_mix_comp=2):
     # Hprior BvM
     # Bayesian Inference and Decision Theory by Kathryn Blackmond Laskey
     beta_mean_phi = numpyro.sample('beta_mean_phi', Uniform(0., 1.))
-    beta_prec_phi = numpyro.sample('beta_prec_phi', Gamma(1., 1 / 20.))  # shape, rate
+    beta_prec_phi = numpyro.sample('beta_prec_phi', Gamma(1., 1 / 15.))  # shape, rate
     halpha_phi = beta_mean_phi * beta_prec_phi
     beta_mean_psi = numpyro.sample('beta_mean_psi', Uniform(0, 1.))
-    beta_prec_psi = numpyro.sample('beta_prec_psi', Gamma(1., 1 / 20.))  # shape, rate
+    beta_prec_psi = numpyro.sample('beta_prec_psi', Gamma(1., 1 / 15.))  # shape, rate
     halpha_psi = beta_mean_psi * beta_prec_psi
 
     with numpyro.plate('mixture', num_mix_comp):
@@ -85,8 +86,8 @@ def ss_model(data, num_mix_comp=2):
 
 def run_hmc(model, data, num_mix_comp, num_samples):
     rng_key = random.PRNGKey(0)
-    kernel = NUTS(model, init_strategy=init_to_median())
-    mcmc = MCMC(kernel, num_samples=num_samples, num_warmup=num_samples // 2)
+    kernel = NUTS(model, init_strategy=init_to_median(), max_tree_depth=6)
+    mcmc = MCMC(kernel, num_samples=num_samples, num_warmup=num_samples // 5)
     mcmc.run(rng_key, data, num_mix_comp)
     mcmc.print_summary()
     post_samples = mcmc.get_samples()
@@ -104,9 +105,10 @@ def fetch_aa_dihedrals(split='train', subsample_to=1000_000):
     return data
 
 
-def main(num_mix_start=4, num_mix_end=5, num_samples=100, aas=('S', 'G', 'P'), capture_std=True,
+def main(num_mix_start=15, num_mix_end=25, num_samples=3500, aas=('S', 'G', 'P'), capture_std=True,
          rerun_inference=True):
-    data = fetch_aa_dihedrals(subsample_to=400)
+    data = fetch_aa_dihedrals(subsample_to=1_000)
+    kde_ramachandran_plot(data, aas, file_name='kde_rama_raw.png')
     for aa in aas:
         for num_mix_comp in range(num_mix_start, num_mix_end):
             if capture_std:
