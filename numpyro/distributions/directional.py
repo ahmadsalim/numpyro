@@ -430,7 +430,7 @@ class Sine(Distribution):
 
         total = _numel(sample_shape)
         phi_den = log_I1(0, conc[1]).reshape(-1, 1)
-        phi_shape = (2, _numel(self.batch_shape), total)
+        phi_shape = (total, 2, _numel(self.batch_shape))
         phi_state = Sine._phi_marginal(phi_shape, phi_key, conc, corr, eig, b0, eigmin, phi_den)
 
         if not jnp.all(phi_state.done):
@@ -451,26 +451,31 @@ class Sine(Distribution):
 
     @staticmethod
     def _phi_marginal(shape, rng_key, conc, corr, eig, b0, eigmin, phi_den):
+        conc = jnp.broadcast_to(conc, shape)
+        eig = jnp.broadcast_to(eig, shape)
+        b0 = jnp.broadcast_to(b0, shape)
+        eigmin = jnp.broadcast_to(eigmin, shape)
+        phi_den = jnp.broadcast_to(phi_den, shape)
+
         def update_fn(curr):
             i, done, phi, key = curr
             phi_key, key = random.split(key)
             accept_key, acg_key, phi_key = random.split(phi_key, 3)
 
-            x = jnp.sqrt(1 + 2 * eig / b0)[..., None] * random.normal(acg_key, shape)
+            x = jnp.sqrt(1 + 2 * eig / b0) * random.normal(acg_key, shape)
 
-            x /= jnp.linalg.norm(x, axis=0)[None, ...]  # Angular Central Gaussian distribution
+            x /= jnp.linalg.norm(x, axis=1)[:, None, :]  # Angular Central Gaussian distribution
 
-            lf = conc[0] * (x[0] - 1) + eigmin + log_I1(0, jnp.sqrt(conc[1] ** 2 + (corr * x[1]) ** 2)).squeeze(
-                0) - phi_den
-            assert lf.shape == shape[1:]
+            lf = conc[:, :1] * (x[:, :1] - 1) + eigmin + log_I1(0, jnp.sqrt(
+                conc[:, 1:] ** 2 + (corr * x[:, 1:]) ** 2)).squeeze(0) - phi_den
+            assert lf.shape == shape
 
-            lg_inv = 1. - b0.reshape(-1, 1) / 2 + jnp.log(
-                b0.reshape(-1, 1) / 2 + (eig.reshape(2, -1, 1) * x ** 2).sum(0))
+            lg_inv = 1. - b0 / 2 + jnp.log(b0 / 2 + (eig * x ** 2).sum(1, keepdims=True))
             assert lg_inv.shape == lf.shape
 
-            accepted = random.uniform(accept_key, shape[1:]) < jnp.exp(lf + lg_inv)
+            accepted = random.uniform(accept_key, shape) < jnp.exp(lf + lg_inv)
 
-            phi = jnp.where(accepted[None, ...], x, phi)
+            phi = jnp.where(accepted, x, phi)
             return PhiMarginalState(i + 1, done | accepted, phi, key)
 
         def cond_fn(curr):
@@ -481,7 +486,8 @@ class Sine(Distribution):
                                                 done=jnp.zeros(shape, dtype=bool),
                                                 phi=jnp.empty(shape, dtype=float),
                                                 key=rng_key))
-        return phi_state
+        return PhiMarginalState(phi_state.i, jnp.transpose(phi_state.done, (1, 2, 0)),
+                                jnp.transpose(phi_state.phi, (1, 2, 0)), phi_state.key)
 
     @property
     def mean(self):
