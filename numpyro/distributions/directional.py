@@ -1,7 +1,6 @@
 # Copyright Contributors to the Pyro project.
 # SPDX-License-Identifier: Apache-2.0
 
-import numpy as np
 import functools
 import math
 import operator
@@ -23,7 +22,7 @@ from numpyro.distributions.util import (
     validate_sample,
     von_mises_centered, lazy_property,
 )
-from numpyro.util import fori_loop
+from numpyro.util import while_loop
 
 
 def _numel(shape):
@@ -295,7 +294,7 @@ class SineSkewed(Distribution):
         base_key, skew_key = random.split(key)
         bd = self.base_dist
         ys = bd.sample(base_key, sample_shape)
-        u = random.uniform(skew_key, sample_shape + self.batch_shape, 0., 1., )
+        u = random.uniform(skew_key, sample_shape + self.batch_shape)
 
         # Section 2.3 step 3 in [1]
         mask = u <= .5 + .5 * (self.skewness * jnp.sin((ys - bd.mean) % (2 * pi))).sum(-1)
@@ -312,8 +311,7 @@ class SineSkewed(Distribution):
         return self.base_dist.log_prob(value) + skew_prob
 
 
-PhiMarginalState = namedtuple("PhiMarginalState",
-                              ["conc", "eigmin", "corr", "eig", "b0", "phi_den", "lengths", "phi", "rng_key", "done"])
+PhiMarginalState = namedtuple("PhiMarginalState", ['i', 'done', 'phi', 'key'])
 
 
 class Sine(Distribution):
@@ -381,11 +379,9 @@ class Sine(Distribution):
             phi_concentration,
             psi_concentration,
             correlation)
-        event_shape = jnp.shape([2])
         batch_shape = lax.broadcast_shapes(phi_loc.shape, psi_loc.shape, phi_concentration.shape,
                                            psi_concentration.shape, correlation.shape)
-
-        super().__init__(batch_shape, event_shape, validate_args)
+        super().__init__(batch_shape, (2,), validate_args)
 
         if self._validate_args and jnp.any(phi_concentration * psi_concentration <= correlation ** 2):
             warnings.warn(
@@ -422,7 +418,6 @@ class Sine(Distribution):
                John T. Kent, Asaad M. Ganeiber & Kanti V. Mardia (2018)
         """
         phi_key, psi_key = random.split(key)
-        sample_shape = jnp.shape(sample_shape)
 
         corr = self.correlation
         conc = jnp.stack((self.phi_concentration, self.psi_concentration))
@@ -434,83 +429,59 @@ class Sine(Distribution):
         b0 = self._bfind(eig)
 
         total = _numel(sample_shape)
-        missing = total * np.ones((_numel(self.batch_shape),), dtype=int)
-        start = jnp.zeros_like(missing)
-        phi = jnp.zeros((2, *missing.shape, total), dtype=corr.dtype)
-
-        # flatten batch_shape
-        conc = conc.reshape(2, -1, 1)
-        eigmin = eigmin.reshape(-1, 1)
-        corr = corr.reshape(-1, 1)
-        eig = eig.reshape(2, -1)
-        b0 = b0.reshape(-1)
         phi_den = log_I1(0, conc[1]).reshape(-1, 1)
-        lengths = jnp.arange(total).reshape(1, -1)
+        phi_shape = (2, _numel(self.batch_shape), total)
+        phi_state = Sine._phi_marginal(phi_shape, phi_key, conc, corr, eig, b0, eigmin, phi_den)
 
-        def update_fn(i, curr):
-            conc, eigmin, corr, eig, b0, phi_den, lengths, phi, key, done = curr
-            # if done:
-            #     return curr
-
-            phi_key, key = random.split(key)
-
-            accept_key, acg_key, phi_key = random.split(phi_key, 3)
-            # curr_conc = conc[:, missing > 0, :]
-            missing_mask = missing > 0
-            curr_conc = jnp.take_along_axis(conc, missing_mask.reshape(1, -1, 1), 1)
-
-            # curr_corr = corr[missing > 0]
-            curr_corr = jnp.take(corr, missing_mask)
-            # curr_eig = eig[:, missing > 0]
-            curr_eig = jnp.take(eig, missing_mask)
-            # curr_b0 = b0[missing > 0]
-            curr_b0 = jnp.take(b0, missing_mask)
-            # min_left = missing[missing > 0].min()
-            min_left = missing[missing_mask].min()
-
-            # FIXME!!
-            x = random.normal(acg_key, (min_left,), 0., jnp.sqrt(1 + 2 * curr_eig / curr_b0)).reshape((2, -1, min_left))
-
-            x /= jnp.linalg.norm(x, axis=0)[None, ...]  # Angular Central Gaussian distribution
-
-            lf = curr_conc[0] * (x[0] - 1) + eigmin[missing > 0] + log_I1(0, jnp.sqrt(
-                curr_conc[1] ** 2 + (curr_corr * x[1]) ** 2)).squeeze(0) - phi_den[missing > 0]
-            assert lf.shape == ((missing > 0).sum(), missing[missing > 0].min())
-
-            lg_inv = 1. - curr_b0.reshape(-1, 1) / 2 + jnp.log(
-                curr_b0.reshape(-1, 1) / 2 + (curr_eig.reshape(2, -1, 1) * x ** 2).sum(0))
-            assert lg_inv.shape == lf.shape
-
-            accepted = random.uniform(accept_key, lf.shape, 0., jnp.ones(())) < (lf + lg_inv).exp()
-
-            phi_mask = jnp.zeros((*missing.shape, total), dtype=int, )
-            phi_mask[missing > 0] += jnp.logical_and(lengths < (start[missing > 0] + accepted.sum(-1)).reshape(-1, 1),
-                                                     lengths >= start[missing > 0].reshape(-1, 1))
-
-            phi[:, phi_mask] += x[:, accepted]
-
-            start[missing > 0] += jnp.sum(accepted, -1)
-            missing[missing > 0] -= jnp.sum(accepted, -1)
-
-            return PhiMarginalState(conc, eigmin, corr, eig, b0, phi_den, lengths, phi, key, missing.sum() == 0)
-
-        phi_marg_state = fori_loop(0, Sine.max_sample_iter, update_fn,
-                                   PhiMarginalState(conc, eigmin, corr, eig, b0, phi_den, lengths, phi, phi_key, False))
-
-        if jnp.any(phi_marg_state.missing > 0):
+        if not jnp.all(phi_state.done):
             raise ValueError("maximum number of iterations exceeded; "
                              "try increasing `SineBivariateVonMises.max_sample_iter`")
 
-        phi = lax.atan2(phi_marg_state.phi[0], phi_marg_state.phi[1])
+        phi = lax.atan2(phi_state.phi[0], phi_state.phi[1])
 
         alpha = jnp.sqrt(conc[1] ** 2 + (corr * jnp.sin(phi)) ** 2)
         beta = lax.atan(corr / conc[1] * jnp.sin(phi))
 
-        psi = VonMises(beta, alpha).sample()
+        psi = VonMises(beta, alpha).sample(psi_key)
 
-        phi_psi = jnp.stack(((phi + self.phi_loc.reshape((-1, 1)) + pi) % (2 * pi) - pi,
-                             (psi + self.psi_loc.reshape((-1, 1)) + pi) % (2 * pi) - pi), axis=-1).permute(1, 0, 2)
+        phi_psi = jnp.transpose(jnp.stack(((phi + self.phi_loc.reshape((-1, 1)) + pi) % (2 * pi) - pi,
+                                           (psi + self.psi_loc.reshape((-1, 1)) + pi) % (2 * pi) - pi), axis=-1),
+                                (1, 0, 2))
         return phi_psi.reshape(*sample_shape, *self.batch_shape, *self.event_shape)
+
+    @staticmethod
+    def _phi_marginal(shape, rng_key, conc, corr, eig, b0, eigmin, phi_den):
+        def update_fn(curr):
+            i, done, phi, key = curr
+            phi_key, key = random.split(key)
+            accept_key, acg_key, phi_key = random.split(phi_key, 3)
+
+            x = jnp.sqrt(1 + 2 * eig / b0)[..., None] * random.normal(acg_key, shape)
+
+            x /= jnp.linalg.norm(x, axis=0)[None, ...]  # Angular Central Gaussian distribution
+
+            lf = conc[0] * (x[0] - 1) + eigmin + log_I1(0, jnp.sqrt(conc[1] ** 2 + (corr * x[1]) ** 2)).squeeze(
+                0) - phi_den
+            assert lf.shape == shape[1:]
+
+            lg_inv = 1. - b0.reshape(-1, 1) / 2 + jnp.log(
+                b0.reshape(-1, 1) / 2 + (eig.reshape(2, -1, 1) * x ** 2).sum(0))
+            assert lg_inv.shape == lf.shape
+
+            accepted = random.uniform(accept_key, shape[1:]) < jnp.exp(lf + lg_inv)
+
+            phi = jnp.where(accepted[None, ...], x, phi)
+            return PhiMarginalState(i + 1, done | accepted, phi, key)
+
+        def cond_fn(curr):
+            return jnp.bitwise_and(curr.i < Sine.max_sample_iter, jnp.logical_not(jnp.all(curr.done)))
+
+        phi_state = while_loop(cond_fn, update_fn,
+                               PhiMarginalState(i=jnp.array(0),
+                                                done=jnp.zeros(shape, dtype=bool),
+                                                phi=jnp.empty(shape, dtype=float),
+                                                key=rng_key))
+        return phi_state
 
     @property
     def mean(self):
