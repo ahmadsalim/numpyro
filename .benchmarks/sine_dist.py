@@ -10,22 +10,23 @@ from numpyro.distributions import Sine, SineSkewed
 if __name__ == '__main__':
     set_platform('gpu')
 
+    key = random.PRNGKey(0)
     loc = jnp.array([0.])
-    conc = jnp.array([1.])
-    corr = jnp.array([.6])
+    conc = jnp.array([400.])
+    corr = jnp.array([100.])
     sine = Sine(loc, loc, conc, conc, corr)
     skewness = jnp.array([.3, -.2])
+
     ss = SineSkewed(sine, skewness)
-    key = random.PRNGKey(0)
     first_timings = []
     after_timings = []
-    for samples in [1, 5, 25, 125, 625, 3125, 15625, 78125, 390625, 1953125, 5 * 1953125]:
+    for samples in [5, 25, 125, 625, 3125, 15625, 78125, 390625, 1953125, 5 * 1953125]:
         times = []
         print(samples)
         for _ in range(11):
             key, sample_key = random.split(key)
             start = time()
-            data = sine.sample(sample_key, (samples,))
+            data = ss.sample(sample_key, (samples,))
             times.append(time() - start)
         first_timings.append(times[1:])
         after_timings.append(times[:1])

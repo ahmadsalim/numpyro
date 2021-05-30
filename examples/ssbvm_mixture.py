@@ -35,7 +35,7 @@ def sine_model(data, num_mix_comp=2):
         psi_loc = numpyro.sample('psi_loc', VonMises(-pi / 2, .2))
         phi_conc = numpyro.sample('phi_conc', Beta(halpha_phi, beta_prec_phi - halpha_phi))
         psi_conc = numpyro.sample('psi_conc', Beta(halpha_psi, beta_prec_psi - halpha_psi))
-        corr_scale = numpyro.sample('corr_scale', Beta(2., 5.))
+        corr_scale = numpyro.sample('corr_scale', Beta(2., 10.))
 
     with numpyro.plate('obs_plate', len(data), dim=-1):
         assign = numpyro.sample('mix_comp', Categorical(mix_weights), infer={"enumerate": "parallel"})
@@ -66,7 +66,7 @@ def ss_model(data, num_mix_comp=2):
         psi_loc = numpyro.sample('psi_loc', VonMises(-pi / 2, .2))
         phi_conc = numpyro.sample('phi_conc', Beta(halpha_phi, beta_prec_phi - halpha_phi))
         psi_conc = numpyro.sample('psi_conc', Beta(halpha_psi, beta_prec_psi - halpha_psi))
-        corr_scale = numpyro.sample('corr_scale', Beta(2., 5.))
+        corr_scale = numpyro.sample('corr_scale', Beta(2., 10.))
 
         skew_phi = numpyro.sample('skew_phi', Uniform(-1., 1.))
         psi_bound = 1 - jnp.abs(skew_phi)
@@ -80,7 +80,7 @@ def ss_model(data, num_mix_comp=2):
                     phi_concentration=750 * phi_conc[assign],
                     psi_concentration=750 * psi_conc[assign],
                     weighted_correlation=corr_scale[assign])
-        return numpyro.sample('phi_psi', SineSkewed(sine, skewness[assign]))
+        return numpyro.sample('phi_psi', SineSkewed(sine, skewness[assign]), obs=data)
 
 
 def run_hmc(model, data, num_mix_comp, num_samples):
@@ -104,8 +104,9 @@ def fetch_aa_dihedrals(split='train', subsample_to=1000_000):
     return data
 
 
-def main(num_mix_start=20, num_mix_end=45, num_samples=4, aas=('S', 'G', 'P'), capture_std=True,
+def main(num_mix_start=4, num_mix_end=5, num_samples=100, aas=('S', 'G', 'P'), capture_std=True,
          rerun_inference=True):
+    data = fetch_aa_dihedrals(subsample_to=400)
     for aa in aas:
         for num_mix_comp in range(num_mix_start, num_mix_end):
             if capture_std:
@@ -116,7 +117,6 @@ def main(num_mix_start=20, num_mix_end=45, num_samples=4, aas=('S', 'G', 'P'), c
                          f'ssbvm_bmixture_aa{aa}_comp{num_mix_comp}_steps{num_samples}.pkl'
 
             if rerun_inference or not chain_file.exists():
-                data = fetch_aa_dihedrals(subsample_to=10)
                 posterior_samples = {aa: {'sine': run_hmc(sine_model, data[aa], num_mix_comp, num_samples),
                                           'ss': run_hmc(ss_model, data[aa], num_mix_comp, num_samples), }}
                 pickle.dump(posterior_samples, chain_file.open('wb'))

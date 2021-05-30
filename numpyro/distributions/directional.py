@@ -271,9 +271,6 @@ class SineSkewed(Distribution):
     support = constraints.independent(constraints.real, 1)
 
     def __init__(self, base_dist: Distribution, skewness, validate_args=None):
-        if jnp.any(jnp.abs(skewness).sum(-1) > 1.):
-            warnings.warn("Total skewness weight shouldn't exceed one.", UserWarning)
-
         batch_shape = jnp.broadcast_shapes(base_dist.batch_shape, skewness.shape[:-1])
         event_shape = skewness.shape[-1:]
         self.skewness = jnp.broadcast_to(skewness, batch_shape + event_shape)
@@ -364,7 +361,7 @@ class Sine(Distribution):
                        'phi_concentration': constraints.positive, 'psi_concentration': constraints.positive,
                        'correlation': constraints.real}
     support = constraints.independent(constraints.real, 1)
-    max_sample_iter = 1000
+    max_sample_iter = 10_000
 
     def __init__(self, phi_loc, psi_loc, phi_concentration, psi_concentration, correlation=None,
                  weighted_correlation=None, validate_args=None):
@@ -429,7 +426,7 @@ class Sine(Distribution):
         b0 = self._bfind(eig)
 
         total = _numel(sample_shape)
-        phi_den = log_I1(0, conc[1]).reshape(-1, 1)
+        phi_den = log_I1(0, conc[1]).squeeze(0)
         phi_shape = (total, 2, _numel(self.batch_shape))
         phi_state = Sine._phi_marginal(phi_shape, phi_key, conc, corr, eig, b0, eigmin, phi_den)
 
@@ -437,16 +434,16 @@ class Sine(Distribution):
             raise ValueError("maximum number of iterations exceeded; "
                              "try increasing `SineBivariateVonMises.max_sample_iter`")
 
-        phi = lax.atan2(phi_state.phi[0], phi_state.phi[1])
+        phi = lax.atan2(phi_state.phi[:, :1], phi_state.phi[:, 1:])
 
         alpha = jnp.sqrt(conc[1] ** 2 + (corr * jnp.sin(phi)) ** 2)
         beta = lax.atan(corr / conc[1] * jnp.sin(phi))
 
         psi = VonMises(beta, alpha).sample(psi_key)
 
-        phi_psi = jnp.transpose(jnp.stack(((phi + self.phi_loc.reshape((-1, 1)) + pi) % (2 * pi) - pi,
-                                           (psi + self.psi_loc.reshape((-1, 1)) + pi) % (2 * pi) - pi), axis=-1),
-                                (1, 0, 2))
+        phi_psi = jnp.concatenate(((phi + self.phi_loc + pi) % (2 * pi) - pi,
+                                   (psi + self.psi_loc + pi) % (2 * pi) - pi), axis=1)
+        phi_psi = jnp.transpose(phi_psi, (0, 2, 1))
         return phi_psi.reshape(*sample_shape, *self.batch_shape, *self.event_shape)
 
     @staticmethod
@@ -486,8 +483,7 @@ class Sine(Distribution):
                                                 done=jnp.zeros(shape, dtype=bool),
                                                 phi=jnp.empty(shape, dtype=float),
                                                 key=rng_key))
-        return PhiMarginalState(phi_state.i, jnp.transpose(phi_state.done, (1, 2, 0)),
-                                jnp.transpose(phi_state.phi, (1, 2, 0)), phi_state.key)
+        return PhiMarginalState(phi_state.i, phi_state.done, phi_state.phi, phi_state.key)
 
     @property
     def mean(self):
