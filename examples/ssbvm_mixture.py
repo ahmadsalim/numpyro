@@ -13,6 +13,8 @@ from numpyro.contrib.funsor import config_enumerate
 from numpyro.distributions import Dirichlet, Gamma, Uniform, VonMises, Beta, Categorical, Sine, SineSkewed
 from numpyro.infer import NUTS, init_to_median, MCMC
 
+np.set_printoptions(threshold=sys.maxsize)
+
 AMINO_ACIDS = ['M', 'N', 'I', 'F', 'E', 'L', 'R', 'D', 'G', 'K', 'Y', 'T', 'H', 'S', 'P', 'A', 'V', 'Q', 'W', 'C']
 
 
@@ -94,13 +96,16 @@ def run_hmc(model, data, num_mix_comp, num_samples):
     return post_samples
 
 
-def fetch_aa_dihedrals(split='train', subsample_to=1000_000):
+def fetch_aa_dihedrals(split='train', subsample_to=1000_000, shuffle=None):
     file = Path(__file__).parent / 'data/9mer_fragments_processed.pkl'
     data = pickle.load(file.open('rb'))[split]['sequences']
     data_aa = np.argmax(data[..., :20], -1)
     data = {aa: data[..., -2:][data_aa == i] for i, aa in enumerate(AMINO_ACIDS)}
-    [np.random.shuffle(v) for v in data.values()]
-    data = {aa: aa_data[:min(subsample_to, aa_data.shape[0])] for aa, aa_data in data.items()}
+    if shuffle is None:
+        shuffles = {k: np.random.permutation(np.arange(v.shape[0]))[:min(subsample_to, v.shape[0])] for k, v in
+                    data.items()}
+        print(shuffles, file=open('runs/sample_indices.txt', 'w'))
+    data = {aa: aa_data[shuffles[aa]] for aa, aa_data in data.items()}
     data = {aa: jnp.array(aa_data, dtype=float) for aa, aa_data in data.items()}
     return data
 
