@@ -430,9 +430,9 @@ class Sine(Distribution):
         phi_shape = (total, 2, _numel(self.batch_shape))
         phi_state = Sine._phi_marginal(phi_shape, phi_key, conc, corr, eig, b0, eigmin, phi_den)
 
-        if not jnp.all(phi_state.done):
-            raise ValueError("maximum number of iterations exceeded; "
-                             "try increasing `SineBivariateVonMises.max_sample_iter`")
+        # if not jnp.all(phi_state.done):
+        #     raise ValueError("maximum number of iterations exceeded; "
+        #                      "try increasing `SineBivariateVonMises.max_sample_iter`")
 
         phi = lax.atan2(phi_state.phi[:, :1], phi_state.phi[:, 1:])
 
