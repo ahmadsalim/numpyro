@@ -37,7 +37,12 @@ from numpyro.distributions.continuous import (
     Uniform,
     Weibull,
 )
-from numpyro.distributions.directional import ProjectedNormal, VonMises, Sine, SineSkewed
+from numpyro.distributions.directional import (
+    ProjectedNormal,
+    VonMises,
+    Sine,
+    SineSkewed,
+)
 from numpyro.distributions.discrete import (
     Bernoulli,
     BernoulliLogits,
